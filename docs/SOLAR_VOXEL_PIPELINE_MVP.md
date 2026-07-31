@@ -2,16 +2,22 @@
 
 ## 1. 组件定位
 
+本项目固定使用以下简称：
+
+- 组件0：Solar Constraint Solver，负责日照计算和前后验证；
+- 组件1：Solar Design Voxelizer，负责切像素/体素块；
+- 组件2：Solar Voxel Optimizer，负责日照计算和体素切削。
+
 体素优化流程由三个职责分离的组件组成：
 
 ```text
 原始 DesignVolume
-├─→ Solar Constraint Solver Before：原方案分析
-└─→ Solar Design Voxelizer：生成柱状体素
+├─→ 组件0 Before：原方案日照分析
+└─→ 组件1：生成柱状体素
        ↓
-    Solar Voxel Optimizer：计算并删除不利体素
+    组件2：计算并删除不利体素
        ↓
-    Solar Constraint Solver After：独立复核
+    组件0 After：独立复核
 ```
 
 现有 `SolarConstraintSolver_Rhino8_SDK.py` 不做切削。它可以在画布中放置两个副本，分别验证优化前和优化后的几何。

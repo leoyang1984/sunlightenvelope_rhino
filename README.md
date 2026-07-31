@@ -1,6 +1,6 @@
 # Sunlight Envelope｜日照可建空间分析
 
-本项目提供五个既有 Grasshopper Python 脚本，用于在地块边界内生成三维采样点，并计算每个采样点的累计或最长连续直射日照时间。另有一个独立的 Rhino 8 Solar Constraint Solver MVP，用于比较 Context 与 Context + Design 两种场景；它不修改原有五个脚本。
+本项目提供五个既有 Grasshopper Python 脚本，用于在地块边界内生成三维采样点，并计算每个采样点的累计或最长连续直射日照时间。另有一套由组件0、组件1和组件2组成的 Rhino 8 Solar Voxel Pipeline，用于双场景日照分析、设计体量体素化和日照约束切削；它不修改原有五个脚本。
 
 快速入口：
 
@@ -11,6 +11,7 @@
 - [Solar Constraint Solver MVP](docs/SOLAR_CONSTRAINT_SOLVER_MVP.md)
 - [Solar Constraint Solver MVP 验收清单](docs/SOLAR_CONSTRAINT_SOLVER_TESTS.md)
 - [Solar Voxel Pipeline MVP](docs/SOLAR_VOXEL_PIPELINE_MVP.md)
+- [开发路线图](docs/ROADMAP.md)
 
 ## 项目结构
 
@@ -41,6 +42,46 @@ SunlightEnvelope_Rhino8/
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 双场景约束分析 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) |
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 柱状体素生成 | [`SolarDesignVoxelizer_Rhino8_SDK.py`](src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py) |
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 体素日照优化 | [`SolarVoxelOptimizer_Rhino8_SDK.py`](src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py) |
+
+## 组件0、1、2命名约定
+
+后续讨论、文档和验收统一使用以下简称：
+
+| 简称 | 正式职责 | 脚本 | 主要输出 |
+|---|---|---|---|
+| **组件0** | 日照计算与前后方案验证 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) | `SunHours`、`ViolationData`、`ConstraintData`、`Report` |
+| **组件1** | 将 `DesignVolume` 划分为可编号、可追踪的像素/体素块 | [`SolarDesignVoxelizer_Rhino8_SDK.py`](src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py) | `Voxels`、编号、柱号、层号、体积和 `VoxelTree` |
+| **组件2** | 对体素执行日照计算和约束切削 | [`SolarVoxelOptimizer_Rhino8_SDK.py`](src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py) | `KeptVoxels`、`RemovedVoxels`、`FinalSunHours` 和优化报告 |
+
+组件0可以在同一 Grasshopper 文件中放置两个实例：第一个分析原始
+`DesignVolume`，第二个独立验证组件2输出的 `KeptVoxels`。
+
+固定流程：
+
+```text
+组件0（原方案日照）
+          │
+DesignVolume → 组件1（切像素块）→ 组件2（日照 + 切削）
+                                      │
+                                      └→ 组件0（切削后独立验证）
+```
+
+### 几何输入接口自适应状态
+
+这里的“接口自适应”专指：即使几何输入端没有设置 Type Hint，组件也能
+将 Grasshopper Goo、Rhino `Guid`、`ObjRef` 或 RhinoObject 自动解析为
+实际 Rhino 几何。它不代替 Item/List/Tree Access 设置，也不替代数值
+输入校验。
+
+| 组件 | 当前状态 | 说明 |
+|---|---|---|
+| 组件0 | **待补齐** | 能解包常见 Grasshopper Goo，但尚未提供 Rhino `Guid`/`ObjRef` 文档查询兜底；当前应按文档设置 `Point3d` 和 `GeometryBase` Type Hint |
+| 组件1 | **已实现** | `DesignVolume` 可自动解析 Goo、`Guid`、`ObjRef`、RhinoObject、Brep 和 Mesh |
+| 组件2 | **已实现** | `ProtectedPoints`、`Voxels` 和 `ContextBuildings` 已使用相同的引用解析兜底 |
+
+下一项计划是为组件0补齐同等级的几何输入自适应，并验证“设置 Type
+Hint”和“不设置 Type Hint”两种接法得到完全一致的计算结果。详细验收
+条件记录在[开发路线图](docs/ROADMAP.md)。
 
 五个脚本保持相同的输入输出名称、采样方法、太阳位置算法和射线遮挡逻辑。连续版只改变 H 的时间统计方式：遮挡会中断当前时段，H 输出最长的一段连续直射日照时间。Script-Mode 版本手动设置接口，SDK-Mode 版本通过 `RunScript` 签名同步输入接口。
 

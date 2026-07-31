@@ -10,6 +10,7 @@
 - [示例文件说明](examples/README.md)
 - [Solar Constraint Solver MVP](docs/SOLAR_CONSTRAINT_SOLVER_MVP.md)
 - [Solar Constraint Solver MVP 验收清单](docs/SOLAR_CONSTRAINT_SOLVER_TESTS.md)
+- [Solar Voxel Pipeline MVP](docs/SOLAR_VOXEL_PIPELINE_MVP.md)
 
 ## 项目结构
 
@@ -38,6 +39,8 @@ SunlightEnvelope_Rhino8/
 | Rhino 版本 | Python 环境 | 脚本文件 |
 |---|---|---|
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 双场景约束分析 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) |
+| Rhino 8 | Python 3 Script Component / SDK-Mode / 柱状体素生成 | [`SolarDesignVoxelizer_Rhino8_SDK.py`](src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py) |
+| Rhino 8 | Python 3 Script Component / SDK-Mode / 体素日照优化 | [`SolarVoxelOptimizer_Rhino8_SDK.py`](src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py) |
 
 五个脚本保持相同的输入输出名称、采样方法、太阳位置算法和射线遮挡逻辑。连续版只改变 H 的时间统计方式：遮挡会中断当前时段，H 输出最长的一段连续直射日照时间。Script-Mode 版本手动设置接口，SDK-Mode 版本通过 `RunScript` 签名同步输入接口。
 

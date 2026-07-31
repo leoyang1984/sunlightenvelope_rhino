@@ -245,3 +245,110 @@ Voxelizer 应输出：
 6. Solver After SunHours 与 Optimizer FinalSunHours 应一致。
 7. 把某个点设置成 Context-only 已不足2小时，Optimizer 不应为它删除全部设计体量。
 8. `EventVoxelPaths` 应出现 `{点;时间样本}` 分支，并列出完整 VoxelID 路径。
+
+## 8. Rhino 8 实机验收记录
+
+验收日期：2026-07-31
+
+模型单位：Millimeters
+
+### 组件1：通过
+
+输入：
+
+```text
+Design Source Solids = 1
+VoxelSizeXY = 2000
+VoxelSizeZ = 2000
+Bounding Box Min = -12390,-24000,0
+Bounding Box Max = 6000,-20000,55920
+```
+
+结果：
+
+```text
+Calculation Time = 0.373 seconds
+Candidate Cells = 560
+Output Columns = 20
+Output Voxels = 560
+Full Box Voxels = 522
+Boundary-Clipped Voxels = 38
+Empty Grid Cells = 0
+Boolean Operation Failures = 0
+Voxelized Volume = 4113475200000 cubic millimeters
+```
+
+结论：
+
+- 所有560个候选单元均生成有效体素；
+- 38个非整尺寸边界单元通过 Boolean Intersection 保留；
+- 未再发生下层判断失败导致上层有效体素整列消失的问题；
+- 组件1实机验收通过。
+
+### 组件2：通过
+
+输入：
+
+```text
+Protected Points = 3
+Input Voxels = 560
+Context Source Mesh Parts = 1
+Sun-Above-Horizon Intervals = 120
+MinimumContinuousMinutes = 3
+RequiredSunHours = 2
+MaxIterations = 200
+```
+
+映射与优化结果：
+
+```text
+Calculation Time = 6.223 seconds
+MeshRay Calls = 165560
+Context MeshRay Errors = 0
+Voxel MeshRay Errors = 0
+Mapped Design-Blocking Events = 183
+Iterations Performed = 4
+Stop Reason = All baseline-solvable points meet the requirement.
+Kept Voxels = 456
+Removed Voxels = 104
+Retained Volume Ratio = 86.22%
+```
+
+逐点结果：
+
+| Protected Point | Baseline | Initial | Final | 状态 |
+|---:|---:|---:|---:|---|
+| 0 | 5.4000 h | 2.3000 h | 2.8500 h | 达标 |
+| 1 | 4.9500 h | 1.9000 h | 2.4500 h | 达标 |
+| 2 | 4.4000 h | 1.4000 h | 2.0000 h | 达标 |
+
+结论：
+
+- 组件2在4轮顶部闭包删除后使三个保护点全部达到2小时；
+- 保留456个体素，占原始体素真实体积的86.22%；
+- 射线映射无 Context 或 Voxel MeshRay 错误；
+- 组件2实机验收通过，但结果仍属于贪心启发式，不代表全局最优。
+
+### 尚待验收
+
+将组件2的 `KeptVoxels` 接入组件0 After，并确认：
+
+```text
+Solver After SunHours ≈ [2.85, 2.45, 2.00]
+```
+
+组件0 After 独立复核完成前，不把本次结果标记为完整端到端验收。
+
+### Grasshopper脚本版本注意事项
+
+Grasshopper画布中的 Python 组件保存的是代码副本，不会随仓库或桌面
+`.py` 文件自动更新。组件2必须使用包含以下两次更新的版本：
+
+```text
+5c5f830  Resolve Rhino document geometry references
+8d09330  Preserve clipped and vertically independent voxels
+```
+
+若旧版组件2报告 `ProtectedPoints` 或 `Voxels` 为 `Guid`，应先用最新
+`SolarVoxelOptimizer_Rhino8_SDK.py` 完整替换组件内代码，再检查 Type
+Hint；不能只根据画布上的端口名称判断代码版本。

@@ -50,7 +50,30 @@
 - 输出保留体素、删除体素、最终日照和迭代报告。
 - 已支持 Goo、Rhino `Guid`、`ObjRef`、RhinoObject 和直接几何输入。
 
+## 当前实机验收状态
+
+| 环节 | 状态 | 结果摘要 |
+|---|---|---|
+| 组件1 | 已通过 | 560个候选体素全部输出，38个边界裁切体素，Boolean失败0 |
+| 组件1 → 组件2 | 已通过 | 最新组件2正确读取3个保护点和560个临时体素 |
+| 组件2 | 已通过 | 4轮移除104个体素，保留率86.22%，三个点最终为2.85、2.45、2.00小时 |
+| 组件2 → 组件0 After | 待验收 | 需要独立复核最终 SunHours |
+
+Grasshopper Python组件不会自动跟随仓库脚本更新。发生类型或接口异常时，
+必须先确认画布组件已经完整替换为最新脚本；端口名称正确不代表内部代码
+是最新版本。
+
 ## 下一阶段计划
+
+### P-Verify：完成端到端独立复核
+
+1. 复制组件0作为组件0 After。
+2. 将组件2的 `KeptVoxels` 接入组件0 After 的 `DesignVolume`。
+3. 保持 Protected Points、Context、日期时间、太阳参数、`TimeStep`、
+   `MinimumContinuousMinutes` 和 `RequiredSunHours` 完全一致。
+4. 验证组件0 After 的 SunHours 与组件2 FinalSunHours 一致：
+   `[2.85, 2.45, 2.00]`。
+5. 保存完整 Report，完成本轮端到端验收记录。
 
 ### P0：补齐组件0几何接口自适应
 
@@ -110,4 +133,3 @@
 - 自动平滑外表皮；
 - 法规报告自动生成；
 - Agent/MCP 自动操作 Grasshopper。
-

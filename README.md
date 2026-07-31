@@ -1,6 +1,6 @@
 # Sunlight Envelope｜日照可建空间分析
 
-本项目提供五个 Grasshopper Python 脚本，用于在地块边界内生成三维采样点，并计算每个采样点的累计或最长连续直射日照时间。
+本项目提供五个既有 Grasshopper Python 脚本，用于在地块边界内生成三维采样点，并计算每个采样点的累计或最长连续直射日照时间。另有一个独立的 Rhino 8 Solar Constraint Solver MVP，用于比较 Context 与 Context + Design 两种场景；它不修改原有五个脚本。
 
 快速入口：
 
@@ -8,6 +8,8 @@
 - [上海设计阶段参数](docs/SHANGHAI_DESIGN_PROFILE.md)
 - [Rhino / Grasshopper 上机验收清单](docs/ON_MACHINE_TESTS.md)
 - [示例文件说明](examples/README.md)
+- [Solar Constraint Solver MVP](docs/SOLAR_CONSTRAINT_SOLVER_MVP.md)
+- [Solar Constraint Solver MVP 验收清单](docs/SOLAR_CONSTRAINT_SOLVER_TESTS.md)
 
 ## 项目结构
 
@@ -30,6 +32,12 @@ SunlightEnvelope_Rhino8/
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 最长连续日照 | [`SunlightEnvelope_Rhino8_Continuous_SDK.py`](src/rhino8/SunlightEnvelope_Rhino8_Continuous_SDK.py) |
 | Rhino 7 | GhPython / IronPython 2.7 / 累计日照 | [`SunlightEnvelope_Rhino7_GhPython.py`](src/rhino7/SunlightEnvelope_Rhino7_GhPython.py) |
 | Rhino 7 | GhPython / IronPython 2.7 / 最长连续日照 | [`SunlightEnvelope_Rhino7_Continuous_GhPython.py`](src/rhino7/SunlightEnvelope_Rhino7_Continuous_GhPython.py) |
+
+新增独立 MVP：
+
+| Rhino 版本 | Python 环境 | 脚本文件 |
+|---|---|---|
+| Rhino 8 | Python 3 Script Component / SDK-Mode / 双场景约束分析 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) |
 
 五个脚本保持相同的输入输出名称、采样方法、太阳位置算法和射线遮挡逻辑。连续版只改变 H 的时间统计方式：遮挡会中断当前时段，H 输出最长的一段连续直射日照时间。Script-Mode 版本手动设置接口，SDK-Mode 版本通过 `RunScript` 签名同步输入接口。
 

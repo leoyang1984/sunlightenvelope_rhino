@@ -20,8 +20,8 @@ The optimizer builds a complete many-to-many mapping:
 
 It then removes voxels with a deterministic greedy heuristic. A voxel may only
 be removed together with all currently kept voxels above it in the same
-column. This produces ground-supported column masses rather than floating
-voxel fragments.
+column. If the designer's input already contains a vertical gap, the occupied
+layers on either side remain part of that same XY column.
 
 Optimization objective
 ----------------------
@@ -385,17 +385,30 @@ def build_context_mesh(context_values):
 
 
 def geometry_volume_from_box(geometry):
-    """Return a stable conservative voxel volume from its bounding box."""
+    """Return the true solid volume plus its world bounding box."""
     box = geometry.GetBoundingBox(True)
 
     if not box.IsValid:
         return 0.0, box
 
-    volume = (
-        max(0.0, box.Max.X - box.Min.X) *
-        max(0.0, box.Max.Y - box.Min.Y) *
-        max(0.0, box.Max.Z - box.Min.Z)
-    )
+    mass_properties = None
+
+    try:
+        mass_properties = rg.VolumeMassProperties.Compute(geometry)
+
+        if mass_properties is None:
+            return 0.0, box
+
+        volume = abs(float(mass_properties.Volume))
+    except Exception:
+        volume = 0.0
+    finally:
+        if mass_properties is not None:
+            try:
+                mass_properties.Dispose()
+            except Exception:
+                pass
+
     return volume, box
 
 
@@ -504,7 +517,7 @@ def prepare_voxels(voxels, voxel_ids, column_ids, layer_ids):
 
         if volume <= EPSILON or not box.IsValid:
             errors.append(
-                "Voxels item {0} has no valid positive bounding-box volume."
+                "Voxels item {0} has no valid positive solid volume."
                 .format(index)
             )
             continue
@@ -544,19 +557,16 @@ def prepare_voxels(voxels, voxel_ids, column_ids, layer_ids):
 
             seen_layers.add(layer_id)
 
-        if ordered_layers and ordered_layers[0] != 0:
-            errors.append(
-                "ColumnID {0} must begin at LayerID 0.".format(column_id)
-            )
-
         for previous_layer, current_layer in zip(
             ordered_layers,
             ordered_layers[1:]
         ):
             if current_layer != previous_layer + 1:
-                errors.append(
-                    "ColumnID {0} has a vertical gap between LayerID {1} "
-                    "and {2}.".format(
+                warnings.append(
+                    "ColumnID {0} has an input-geometry gap between "
+                    "LayerID {1} and {2}; occupied layers remain valid and "
+                    "top-down removal still follows global layer order."
+                    .format(
                         column_id,
                         previous_layer,
                         current_layer
@@ -567,7 +577,7 @@ def prepare_voxels(voxels, voxel_ids, column_ids, layer_ids):
 
 
 def create_optimized_columns(voxel_records, column_members, keep_mask):
-    """Create one axis-aligned Brep spanning kept voxels in each column."""
+    """Combine exact kept voxel meshes per column without filling gaps."""
     columns = []
 
     for column_id in sorted(column_members):
@@ -580,20 +590,20 @@ def create_optimized_columns(voxel_records, column_members, keep_mask):
         if not kept_indices:
             continue
 
-        minimum = rg.Point3d(
-            min(voxel_records[index]["bbox"].Min.X for index in kept_indices),
-            min(voxel_records[index]["bbox"].Min.Y for index in kept_indices),
-            min(voxel_records[index]["bbox"].Min.Z for index in kept_indices)
-        )
-        maximum = rg.Point3d(
-            max(voxel_records[index]["bbox"].Max.X for index in kept_indices),
-            max(voxel_records[index]["bbox"].Max.Y for index in kept_indices),
-            max(voxel_records[index]["bbox"].Max.Z for index in kept_indices)
-        )
-        brep = rg.Brep.CreateFromBox(rg.BoundingBox(minimum, maximum))
+        combined = rg.Mesh()
 
-        if brep is not None and brep.IsValid:
-            columns.append(brep)
+        for index in kept_indices:
+            combined.Append(voxel_records[index]["mesh"])
+
+        try:
+            combined.Vertices.CombineIdentical(True, True)
+            combined.Faces.CullDegenerateFaces()
+            combined.Compact()
+        except Exception:
+            pass
+
+        if combined.IsValid and combined.Faces.Count > 0:
+            columns.append(combined)
 
     return columns
 
@@ -1735,8 +1745,8 @@ def build_report(
             "KeepMask[i] corresponds to Voxels[i].",
             "KeptVoxels and RemovedVoxels preserve original item order.",
             (
-                "OptimizedColumns contains one continuous Brep per "
-                "remaining column."
+                "OptimizedColumns contains one combined exact Mesh per "
+                "remaining XY column and does not fill input-geometry gaps."
             ),
             (
                 "EventVoxelPaths branch {point;sample} contains every "

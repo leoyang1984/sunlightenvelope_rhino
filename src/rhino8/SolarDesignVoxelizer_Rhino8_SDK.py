@@ -5,8 +5,8 @@ Rhino 8 Grasshopper Python 3 Script Component - SDK Mode
 
 Purpose
 -------
-Convert a designer-controlled closed DesignVolume into conservative,
-world-axis-aligned column voxels. The same DesignVolume input can be shared
+Convert a designer-controlled closed DesignVolume into clipped,
+world-axis-aligned column cells. The same DesignVolume input can be shared
 with SolarConstraintSolver_Rhino8_SDK.py.
 
 The voxel contract is intentionally explicit:
@@ -25,10 +25,12 @@ MVP geometry rules
 ------------------
 - DesignVolume must contain one or more valid closed solids.
 - World Z is the vertical direction.
-- The lowest world-Z level of the combined input is the common base.
-- Only cells fully contained in the input solids are kept.
-- Each output column must be continuously supported from the common base.
-- Overhangs, floating pieces, and cells above a vertical gap are discarded.
+- Fully contained cells remain regular boxes.
+- Boundary cells are Boolean-clipped to DesignVolume instead of discarded.
+- Every occupied layer is evaluated independently. A gap at a lower layer
+  does not discard valid geometry above it.
+- ColumnIDs group cells by the same world-XY grid location. LayerIDs retain
+  the global world-Z grid index and may contain gaps when the input does.
 - The grid is aligned to World X/Y and begins at the combined bounding-box
   minimum.
 
@@ -245,58 +247,66 @@ def mesh_from_brep(brep):
     return joined
 
 
-def geometry_to_closed_mesh(geometry):
-    """Convert a supported closed geometry object to one solid mesh."""
+def geometry_to_closed_brep(geometry):
+    """Convert a supported closed Rhino geometry object to a solid Brep."""
     geometry = resolve_rhino_geometry(geometry)
 
     if geometry is None:
         return None
 
-    if isinstance(geometry, rg.Mesh):
+    brep = None
+
+    if isinstance(geometry, rg.Brep):
+        try:
+            brep = geometry.DuplicateBrep()
+        except Exception:
+            brep = None
+    elif isinstance(geometry, rg.Mesh):
         if not geometry.IsValid or not geometry.IsSolid:
             return None
 
-        duplicate = geometry.DuplicateMesh()
-
-        if duplicate is None or not duplicate.IsValid:
-            return None
-
-        return duplicate
-
-    if isinstance(geometry, rg.Brep):
-        return mesh_from_brep(geometry)
-
-    if isinstance(geometry, rg.Extrusion):
         try:
-            return mesh_from_brep(geometry.ToBrep())
+            brep = rg.Brep.CreateFromMesh(geometry, True)
         except Exception:
-            return None
-
-    if isinstance(geometry, rg.Surface):
+            brep = None
+    elif isinstance(geometry, rg.Extrusion):
         try:
-            return mesh_from_brep(geometry.ToBrep())
+            brep = geometry.ToBrep()
         except Exception:
-            return None
-
-    if isinstance(geometry, rg.SubD):
+            brep = None
+    elif isinstance(geometry, rg.Surface):
         try:
-            return mesh_from_brep(geometry.ToBrep())
+            brep = geometry.ToBrep()
         except Exception:
-            return None
+            brep = None
+    elif isinstance(geometry, rg.SubD):
+        try:
+            brep = geometry.ToBrep()
+        except Exception:
+            brep = None
 
-    return None
+    if brep is None or not brep.IsValid or not brep.IsSolid:
+        return None
+
+    try:
+        if brep.SolidOrientation == rg.BrepSolidOrientation.Inward:
+            brep.Flip()
+    except Exception:
+        pass
+
+    return brep
 
 
-def collect_closed_source_meshes(design_volume):
-    """Validate DesignVolume and return one closed mesh per source item."""
+def collect_closed_sources(design_volume, tolerance):
+    """Validate DesignVolume and return Boolean-ready solid Breps and meshes."""
     errors = []
     warnings = []
-    source_meshes = []
+    source_breps = []
     values = normalize_sequence(design_volume)
 
     if not values:
         errors.append("DesignVolume is empty.")
-        return source_meshes, errors, warnings
+        return [], [], 0, errors, warnings
 
     for index, value in enumerate(values):
         geometry = resolve_rhino_geometry(value)
@@ -309,9 +319,9 @@ def collect_closed_source_meshes(design_volume):
             )
             continue
 
-        mesh = geometry_to_closed_mesh(geometry)
+        brep = geometry_to_closed_brep(geometry)
 
-        if mesh is None:
+        if brep is None:
             errors.append(
                 "DesignVolume item {0} must be a valid closed solid. "
                 "Received: {1}.".format(
@@ -321,20 +331,58 @@ def collect_closed_source_meshes(design_volume):
             )
             continue
 
-        if not mesh.IsSolid:
+        source_breps.append(brep)
+
+    source_count = len(source_breps)
+
+    if not source_breps and not errors:
+        errors.append("DesignVolume contains no usable closed solids.")
+
+    if errors:
+        return [], [], source_count, errors, warnings
+
+    if len(source_breps) > 1:
+        try:
+            union_result = rg.Brep.CreateBooleanUnion(
+                source_breps,
+                tolerance
+            )
+        except Exception:
+            union_result = None
+
+        valid_union = [
+            brep
+            for brep in (union_result or [])
+            if brep is not None and brep.IsValid and brep.IsSolid
+        ]
+
+        if valid_union:
+            source_breps = valid_union
+        else:
+            warnings.append(
+                "DesignVolume solid union failed. Source solids will be "
+                "clipped independently; overlapping source solids may "
+                "produce a composite boundary cell."
+            )
+
+    source_meshes = []
+
+    for index, brep in enumerate(source_breps):
+        mesh = mesh_from_brep(brep)
+
+        if mesh is None:
             errors.append(
-                "DesignVolume item {0} did not produce a closed, oriented, "
-                "manifold solid mesh."
-                .format(index)
+                "DesignVolume Boolean source {0} did not produce a valid "
+                "closed analysis mesh.".format(index)
             )
             continue
 
         source_meshes.append(mesh)
 
-    if not source_meshes and not errors:
-        errors.append("DesignVolume contains no usable closed solids.")
+    if errors:
+        return [], [], source_count, errors, warnings
 
-    return source_meshes, errors, warnings
+    return source_breps, source_meshes, source_count, errors, warnings
 
 
 def union_bounding_box(meshes):
@@ -412,6 +460,210 @@ def cell_is_conservatively_inside(
     return True
 
 
+def bounding_boxes_overlap(first, second, tolerance):
+    """Return True when two world bounding boxes overlap within tolerance."""
+    return not (
+        first.Max.X < second.Min.X - tolerance or
+        first.Min.X > second.Max.X + tolerance or
+        first.Max.Y < second.Min.Y - tolerance or
+        first.Min.Y > second.Max.Y + tolerance or
+        first.Max.Z < second.Min.Z - tolerance or
+        first.Min.Z > second.Max.Z + tolerance
+    )
+
+
+def geometry_volume_and_centroid(geometry):
+    """Return the true solid volume and centroid of a Brep or closed Mesh."""
+    mass_properties = None
+
+    try:
+        mass_properties = rg.VolumeMassProperties.Compute(geometry)
+
+        if mass_properties is None:
+            return 0.0, None
+
+        volume = abs(float(mass_properties.Volume))
+        centroid = rg.Point3d(mass_properties.Centroid)
+        return volume, centroid
+    except Exception:
+        return 0.0, None
+    finally:
+        if mass_properties is not None:
+            try:
+                mass_properties.Dispose()
+            except Exception:
+                pass
+
+
+def combine_clipped_breps(breps, tolerance):
+    """Return one closed GeometryBase representing all pieces in one cell."""
+    valid_breps = [
+        brep
+        for brep in breps
+        if brep is not None and brep.IsValid and brep.IsSolid
+    ]
+
+    if not valid_breps:
+        return None, False
+
+    if len(valid_breps) == 1:
+        return valid_breps[0], False
+
+    try:
+        union_result = rg.Brep.CreateBooleanUnion(valid_breps, tolerance)
+    except Exception:
+        union_result = None
+
+    union_breps = [
+        brep
+        for brep in (union_result or [])
+        if brep is not None and brep.IsValid and brep.IsSolid
+    ]
+
+    if len(union_breps) == 1:
+        return union_breps[0], False
+
+    pieces = union_breps if union_breps else valid_breps
+    combined_mesh = rg.Mesh()
+
+    for brep in pieces:
+        mesh = mesh_from_brep(brep)
+
+        if mesh is None:
+            return None, True
+
+        combined_mesh.Append(mesh)
+
+    try:
+        combined_mesh.Vertices.CombineIdentical(True, True)
+        combined_mesh.Faces.CullDegenerateFaces()
+        combined_mesh.Compact()
+    except Exception:
+        pass
+
+    if (
+        not combined_mesh.IsValid or
+        combined_mesh.Faces.Count == 0 or
+        not combined_mesh.IsClosed
+    ):
+        return None, True
+
+    return combined_mesh, union_result is None
+
+
+def clip_cell_to_sources(
+    minimum,
+    maximum,
+    source_breps,
+    source_meshes,
+    source_boxes,
+    tolerance
+):
+    """
+    Return one exact cell/source intersection record or None.
+
+    Fully contained cells use the original regular box. Boundary cells are
+    Boolean-intersected with the source Breps, so the output never expands
+    beyond DesignVolume merely to fill a grid cell.
+    """
+    box = rg.BoundingBox(minimum, maximum)
+    cell_brep = rg.Brep.CreateFromBox(box)
+
+    if cell_brep is None or not cell_brep.IsValid:
+        return None
+
+    if cell_is_conservatively_inside(
+        minimum,
+        maximum,
+        source_meshes,
+        tolerance
+    ):
+        volume = (
+            (maximum.X - minimum.X) *
+            (maximum.Y - minimum.Y) *
+            (maximum.Z - minimum.Z)
+        )
+        return {
+            "geometry": cell_brep,
+            "center": box.Center,
+            "volume": volume,
+            "clipped": False,
+            "boolean_failures": 0
+        }
+
+    intersections = []
+    boolean_failures = 0
+
+    for source_brep, source_box in zip(source_breps, source_boxes):
+        if not bounding_boxes_overlap(box, source_box, tolerance):
+            continue
+
+        try:
+            pieces = rg.Brep.CreateBooleanIntersection(
+                cell_brep,
+                source_brep,
+                tolerance
+            )
+        except Exception:
+            pieces = None
+
+        if pieces is None:
+            boolean_failures += 1
+            continue
+
+        intersections.extend(
+            piece
+            for piece in pieces
+            if piece is not None and piece.IsValid and piece.IsSolid
+        )
+
+    geometry, combine_failed = combine_clipped_breps(
+        intersections,
+        tolerance
+    )
+
+    if combine_failed:
+        boolean_failures += 1
+
+    if geometry is None:
+        return {
+            "geometry": None,
+            "center": None,
+            "volume": 0.0,
+            "clipped": False,
+            "boolean_failures": boolean_failures
+        }
+
+    volume, centroid = geometry_volume_and_centroid(geometry)
+    minimum_volume = max(tolerance ** 3, EPSILON)
+
+    if volume <= minimum_volume or centroid is None:
+        return {
+            "geometry": None,
+            "center": None,
+            "volume": 0.0,
+            "clipped": False,
+            "boolean_failures": boolean_failures
+        }
+
+    return {
+        "geometry": geometry,
+        "center": centroid,
+        "volume": volume,
+        "clipped": True,
+        "boolean_failures": boolean_failures
+    }
+
+
+def enumerate_occupied_layers(layer_results):
+    """Keep every independently occupied global layer, including after gaps."""
+    return [
+        (layer_index, result)
+        for layer_index, result in enumerate(layer_results)
+        if result is not None and result.get("geometry") is not None
+    ]
+
+
 def validate_sizes(voxel_size_xy, voxel_size_z):
     """Validate voxel dimensions and return normalized floats."""
     errors = []
@@ -446,6 +698,7 @@ def axis_cell_count(length, cell_size):
 
 
 def create_voxel_grid(
+    source_breps,
     source_meshes,
     bounding_box,
     voxel_size_xy,
@@ -453,7 +706,7 @@ def create_voxel_grid(
     tolerance
 ):
     """
-    Create conservative, base-supported, world-aligned column voxels.
+    Create independently occupied, boundary-clipped world-aligned cells.
 
     Returns flat synchronized arrays plus diagnostic counts.
     """
@@ -490,10 +743,16 @@ def create_voxel_grid(
     centers = []
     volumes = []
     column_count = 0
-    unsupported_cell_count = 0
-    rejected_cell_count = 0
+    full_cell_count = 0
+    clipped_cell_count = 0
+    empty_cell_count = 0
+    boolean_failure_count = 0
     processed_candidates = 0
     cancelled = False
+    source_boxes = [
+        brep.GetBoundingBox(True)
+        for brep in source_breps
+    ]
 
     for x_index in range(count_x):
         if cancelled:
@@ -511,8 +770,7 @@ def create_voxel_grid(
                 minimum_y + voxel_size_xy,
                 bounding_box.Max.Y
             )
-            cell_flags = []
-            cell_bounds = []
+            layer_results = []
 
             for z_index in range(count_z):
                 minimum_z = bounding_box.Min.Z + z_index * voxel_size_z
@@ -530,15 +788,28 @@ def create_voxel_grid(
                     maximum_y,
                     maximum_z
                 )
-                is_inside = cell_is_conservatively_inside(
+                result = clip_cell_to_sources(
                     minimum,
                     maximum,
+                    source_breps,
                     source_meshes,
+                    source_boxes,
                     tolerance
                 )
-                cell_flags.append(is_inside)
-                cell_bounds.append((minimum, maximum, z_index))
+                layer_results.append(result)
                 processed_candidates += 1
+
+                if result is None or result.get("geometry") is None:
+                    empty_cell_count += 1
+                elif result.get("clipped"):
+                    clipped_cell_count += 1
+                else:
+                    full_cell_count += 1
+
+                if result is not None:
+                    boolean_failure_count += int(
+                        result.get("boolean_failures", 0)
+                    )
 
                 if (
                     processed_candidates % ESCAPE_CHECK_INTERVAL == 0 and
@@ -550,47 +821,22 @@ def create_voxel_grid(
             if cancelled:
                 break
 
-            supported_bounds = []
-            support_broken = False
+            occupied_layers = enumerate_occupied_layers(layer_results)
 
-            for flag, bounds in zip(cell_flags, cell_bounds):
-                if not support_broken and flag:
-                    supported_bounds.append(bounds)
-                    continue
-
-                if not flag:
-                    support_broken = True
-                    rejected_cell_count += 1
-                    continue
-
-                unsupported_cell_count += 1
-
-            if not supported_bounds:
+            if not occupied_layers:
                 continue
 
             column_id = column_count
             column_count += 1
 
-            for minimum, maximum, z_index in supported_bounds:
-                box = rg.BoundingBox(minimum, maximum)
-                brep = rg.Brep.CreateFromBox(box)
-
-                if brep is None or not brep.IsValid:
-                    continue
-
+            for z_index, result in occupied_layers:
                 voxel_id = len(voxels)
-                center = box.Center
-                volume = (
-                    (maximum.X - minimum.X) *
-                    (maximum.Y - minimum.Y) *
-                    (maximum.Z - minimum.Z)
-                )
-                voxels.append(brep)
+                voxels.append(result["geometry"])
                 voxel_ids.append(voxel_id)
                 column_ids.append(column_id)
                 layer_ids.append(z_index)
-                centers.append(center)
-                volumes.append(volume)
+                centers.append(result["center"])
+                volumes.append(result["volume"])
 
     return {
         "error": None,
@@ -605,8 +851,10 @@ def create_voxel_grid(
         "count_z": count_z,
         "candidate_count": candidate_count,
         "column_count": column_count,
-        "rejected_cell_count": rejected_cell_count,
-        "unsupported_cell_count": unsupported_cell_count,
+        "full_cell_count": full_cell_count,
+        "clipped_cell_count": clipped_cell_count,
+        "empty_cell_count": empty_cell_count,
+        "boolean_failure_count": boolean_failure_count,
         "cancelled": cancelled
     }
 
@@ -650,8 +898,8 @@ def build_report(
             format_number(voxel_size_z, 3)
         ),
         "Grid Alignment: World XY / World Z",
-        "Containment Mode: Conservative Full Cell",
-        "Support Rule: Continuous from combined minimum Z",
+        "Boundary Mode: Exact Brep Boolean Intersection",
+        "Layer Rule: Independent occupancy; valid layers survive gaps",
         "--- Bounding Box ---",
         "Minimum: {0}".format(bounding_box.Min),
         "Maximum: {0}".format(bounding_box.Max),
@@ -668,11 +916,17 @@ def build_report(
         "Output Voxels: {0}".format(
             len(result.get("voxels", []))
         ),
-        "Conservative Rejected Cells: {0}".format(
-            result.get("rejected_cell_count", 0)
+        "Full Box Voxels: {0}".format(
+            result.get("full_cell_count", 0)
         ),
-        "Unsupported Cells Discarded: {0}".format(
-            result.get("unsupported_cell_count", 0)
+        "Boundary-Clipped Voxels: {0}".format(
+            result.get("clipped_cell_count", 0)
+        ),
+        "Empty Grid Cells: {0}".format(
+            result.get("empty_cell_count", 0)
+        ),
+        "Boolean Operation Failures: {0}".format(
+            result.get("boolean_failure_count", 0)
         ),
         "Voxelized Volume: {0} cubic model units".format(
             format_number(total_volume, 3)
@@ -685,8 +939,12 @@ def build_report(
             "VoxelTree branch {c} contains ColumnID c from bottom to top."
         ),
         (
-            "The voxelized result is a conservative subset of "
-            "DesignVolume."
+            "Boundary cells are clipped to DesignVolume instead of being "
+            "discarded or expanded outside it."
+        ),
+        (
+            "A lower empty layer does not delete valid occupied layers "
+            "above it."
         ),
         (
             "This component generates candidates only; it does not perform "
@@ -741,8 +999,15 @@ def execute(DesignVolume, VoxelSizeXY, VoxelSizeZ, Run):
         VoxelSizeXY,
         VoxelSizeZ
     )
-    source_meshes, geometry_errors, warnings = (
-        collect_closed_source_meshes(DesignVolume)
+    tolerance = active_document_tolerance()
+    (
+        source_breps,
+        source_meshes,
+        source_count,
+        geometry_errors,
+        warnings
+    ) = (
+        collect_closed_sources(DesignVolume, tolerance)
     )
     errors = size_errors + geometry_errors
 
@@ -775,8 +1040,8 @@ def execute(DesignVolume, VoxelSizeXY, VoxelSizeZ, Run):
             )
         )
 
-    tolerance = active_document_tolerance()
     result = create_voxel_grid(
+        source_breps,
         source_meshes,
         bounding_box,
         size_xy,
@@ -796,6 +1061,14 @@ def execute(DesignVolume, VoxelSizeXY, VoxelSizeZ, Run):
             error_report([result["error"]], warnings)
         )
 
+    if result.get("boolean_failure_count", 0) > 0:
+        warnings.append(
+            "{0} boundary Boolean operation(s) failed. Review the preview "
+            "and Rhino object validity before optimization.".format(
+                result["boolean_failure_count"]
+            )
+        )
+
     if not result["voxels"]:
         return (
             [],
@@ -807,8 +1080,8 @@ def execute(DesignVolume, VoxelSizeXY, VoxelSizeZ, Run):
             empty_tree,
             error_report(
                 [
-                    "No fully contained, base-supported voxels were "
-                    "generated. Reduce voxel sizes or check DesignVolume."
+                    "No positive-volume voxel intersections were generated. "
+                    "Check DesignVolume and the Rhino Boolean tolerance."
                 ],
                 warnings
             )
@@ -831,7 +1104,7 @@ def execute(DesignVolume, VoxelSizeXY, VoxelSizeZ, Run):
             build_report(
                 status,
                 time.perf_counter() - start_time,
-                len(source_meshes),
+                source_count,
                 bounding_box,
                 size_xy,
                 size_z,
@@ -852,7 +1125,7 @@ def execute(DesignVolume, VoxelSizeXY, VoxelSizeZ, Run):
     report = build_report(
         "Completed",
         time.perf_counter() - start_time,
-        len(source_meshes),
+        source_count,
         bounding_box,
         size_xy,
         size_z,

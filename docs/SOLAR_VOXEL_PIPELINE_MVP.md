@@ -35,12 +35,12 @@
 
 | 名称 | 数据结构 | 说明 |
 |---|---|---|
-| Voxels | List | 按统一索引排列的体素 Brep |
+| Voxels | List | 按统一索引排列的完整 Box 或边界裁切实体 |
 | VoxelIDs | List[int] | 唯一体素编号 |
 | ColumnIDs | List[int] | 每个体素所属柱编号 |
 | LayerIDs | List[int] | World Z 层编号 |
 | VoxelCenters | List[Point3d] | 体素中心 |
-| VoxelVolumes | List[float] | 体素包围盒体积 |
+| VoxelVolumes | List[float] | 体素真实实体体积 |
 | VoxelTree | DataTree | `{ColumnID}`，分支内从下到上 |
 | Report | List[str] | 状态、数量、体积和警告 |
 
@@ -60,10 +60,14 @@ Voxels[i]
 - World Z 为竖直方向。
 - 输入必须是有效闭合实体。
 - 网格从所有输入的联合包围盒最小点开始。
-- 使用角点、中心和面中心进行保守的单元包含测试。
-- 柱子必须从联合最低标高连续向上。
-- 悬空单元、竖向间断上方的单元会被丢弃。
-- 第一版优先用于 Box、直墙和规则退台；复杂曲面边界属于近似体素化。
+- 完整位于输入内部的单元保留为规则 Box。
+- 边界单元通过 Brep Boolean Intersection 裁切到 DesignVolume 内部，
+  不再因为只有部分进入边界而被整格删除。
+- 每一个 World Z 层独立判断；较低层为空不会连带删除上方有效层。
+- ColumnID 仍按相同 World XY 网格位置分组，LayerID 保留全局层号；
+  输入几何本身存在竖向空隙时，层号允许跳跃。
+- 第一版优先用于 Box、直墙和规则退台；复杂或容差不良的 Brep 应检查
+  Report 中的 Boolean Operation Failures。
 
 毫米模型建议从以下参数开始：
 
@@ -121,9 +125,9 @@ MaxIterations = 200
 
 | 名称 | 数据结构 | 说明 |
 |---|---|---|
-| KeptVoxels | List[Brep] | 优化后保留的原始体素 |
-| RemovedVoxels | List[Brep] | 被删除的原始体素 |
-| OptimizedColumns | List[Brep] | 每根剩余柱子的连续简化体量 |
+| KeptVoxels | List[GeometryBase] | 优化后保留的原始体素 |
+| RemovedVoxels | List[GeometryBase] | 被删除的原始体素 |
+| OptimizedColumns | List[Mesh] | 每个 XY 柱保留体素的组合网格，不填补原有空隙 |
 | KeepMask | List[bool] | 与输入 Voxels 同序，True 表示保留 |
 | InitialSunHours | List[float] | 原始体素方案的有效累计日照 |
 | FinalSunHours | List[float] | 优化后的有效累计日照 |
@@ -191,7 +195,8 @@ Protected Point + Sample Time
 
 推荐将 Optimizer 的 `KeptVoxels` 直接连接到第二个现有 Solver 的 `DesignVolume`。现有 Solver 支持 List Access，不要求先进行 Solid Union。
 
-也可以连接 `OptimizedColumns`，两者的日照结果应一致：
+也可以连接 `OptimizedColumns`；它按 XY 柱合并精确体素网格，不再用一个
+包围盒填满边界或输入几何原有的竖向空隙。两者的日照结果应一致：
 
 ```text
 KeptVoxels → Solver After

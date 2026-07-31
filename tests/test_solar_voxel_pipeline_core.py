@@ -130,6 +130,31 @@ class SolarVoxelPipelineCoreTests(unittest.TestCase):
         self.assertEqual(6, functions["axis_cell_count"](12000, 2000))
         self.assertEqual(7, functions["axis_cell_count"](12001, 2000))
 
+    def test_voxelizer_keeps_occupied_layers_above_a_gap(self):
+        functions = extract_functions(
+            VOXELIZER_PATH,
+            {"enumerate_occupied_layers"},
+        )
+        lower = {"geometry": "lower"}
+        upper = {"geometry": "upper"}
+        occupied = functions["enumerate_occupied_layers"](
+            [lower, None, upper]
+        )
+        self.assertEqual([(0, lower), (2, upper)], occupied)
+
+    def test_voxelizer_uses_boundary_boolean_and_true_volume(self):
+        source = VOXELIZER_PATH.read_text(encoding="utf-8")
+        self.assertIn("Brep.CreateBooleanIntersection", source)
+        self.assertIn("VolumeMassProperties.Compute", source)
+        self.assertNotIn("support_broken", source)
+
+        optimizer_source = OPTIMIZER_PATH.read_text(encoding="utf-8")
+        self.assertIn("VolumeMassProperties.Compute", optimizer_source)
+        self.assertIn(
+            "occupied layers remain valid",
+            optimizer_source,
+        )
+
     def test_voxelizer_sdk_signature(self):
         tree = ast.parse(VOXELIZER_PATH.read_text(encoding="utf-8"))
         script_class = next(

@@ -5,6 +5,7 @@ import math
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).parents[1]
@@ -82,6 +83,45 @@ def minute_samples(count, minutes=1):
 
 
 class SolarVoxelPipelineCoreTests(unittest.TestCase):
+    def test_voxel_components_resolve_rhino_document_guids(self):
+        class FakeGuid:
+            pass
+
+        geometry = object()
+        guid = FakeGuid()
+
+        class FakeObjectTable:
+            @staticmethod
+            def FindId(value):
+                return SimpleNamespace(Geometry=geometry) if value is guid else None
+
+        fake_rhino = SimpleNamespace(
+            RhinoDoc=SimpleNamespace(
+                ActiveDoc=SimpleNamespace(Objects=FakeObjectTable())
+            ),
+            DocObjects=SimpleNamespace(ObjRef=type("FakeObjRef", (), {})),
+        )
+        fake_system = SimpleNamespace(Guid=FakeGuid)
+        fake_rg = SimpleNamespace(
+            GeometryBase=type("FakeGeometryBase", (), {})
+        )
+
+        for path in (VOXELIZER_PATH, OPTIMIZER_PATH):
+            functions = extract_functions(
+                path,
+                {"resolve_rhino_geometry"},
+                {
+                    "unwrap_gh_value": lambda value: value,
+                    "Rhino": fake_rhino,
+                    "System": fake_system,
+                    "rg": fake_rg,
+                },
+            )
+            self.assertIs(
+                geometry,
+                functions["resolve_rhino_geometry"](guid),
+            )
+
     def test_voxelizer_axis_cell_count(self):
         functions = extract_functions(
             VOXELIZER_PATH,

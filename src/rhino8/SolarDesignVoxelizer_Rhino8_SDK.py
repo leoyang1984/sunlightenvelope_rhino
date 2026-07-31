@@ -50,6 +50,7 @@ import time
 import Rhino
 import Rhino.Geometry as rg
 import scriptcontext as sc
+import System
 
 import Grasshopper
 from Grasshopper import DataTree
@@ -100,6 +101,47 @@ def normalize_sequence(value):
         return list(value)
     except Exception:
         return [value]
+
+
+def resolve_rhino_geometry(value):
+    """Resolve GH goo, Rhino document Guid, ObjRef, or RhinoObject geometry."""
+    value = unwrap_gh_value(value)
+
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, System.Guid):
+            document = Rhino.RhinoDoc.ActiveDoc
+
+            if document is None:
+                return value
+
+            rhino_object = document.Objects.FindId(value)
+
+            if rhino_object is not None:
+                return rhino_object.Geometry
+    except Exception:
+        pass
+
+    try:
+        if isinstance(value, Rhino.DocObjects.ObjRef):
+            geometry = value.Geometry()
+
+            if geometry is not None:
+                return geometry
+    except Exception:
+        pass
+
+    try:
+        geometry = value.Geometry
+
+        if isinstance(geometry, rg.GeometryBase):
+            return geometry
+    except Exception:
+        pass
+
+    return value
 
 
 def is_finite_number(value):
@@ -205,7 +247,7 @@ def mesh_from_brep(brep):
 
 def geometry_to_closed_mesh(geometry):
     """Convert a supported closed geometry object to one solid mesh."""
-    geometry = unwrap_gh_value(geometry)
+    geometry = resolve_rhino_geometry(geometry)
 
     if geometry is None:
         return None
@@ -257,7 +299,7 @@ def collect_closed_source_meshes(design_volume):
         return source_meshes, errors, warnings
 
     for index, value in enumerate(values):
-        geometry = unwrap_gh_value(value)
+        geometry = resolve_rhino_geometry(value)
 
         if geometry is None:
             warnings.append(

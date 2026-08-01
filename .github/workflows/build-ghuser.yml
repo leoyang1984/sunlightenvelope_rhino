@@ -1,0 +1,78 @@
+name: Build User Objects
+
+# Builds the .ghuser components so nobody needs a local IronPython or
+# GH_IO.dll. Download the result from the run's Artifacts, or from the
+# Release assets when a tag is pushed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/ghuser/**"
+      - "src/rhino7/**"
+      - "tools/**"
+      - ".github/workflows/build-ghuser.yml"
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "src/ghuser/**"
+      - "src/rhino7/**"
+      - "tools/**"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # code.py is derived from src/rhino7. Fail loudly if someone edited the
+      # Rhino 7 script without regenerating, so the User Object can never ship
+      # an algorithm the project did not verify.
+      - name: Check generated code.py is in sync
+        run: python3 tools/build_ghuser_code.py --check
+
+      # Catches what the componentizer would either reject, or accept and
+      # then fail on at run time inside Grasshopper.
+      - name: Validate bundle metadata
+        run: python3 tools/check_ghuser_bundle.py
+
+  build:
+    name: Build .ghuser
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 2.7.8.1 is the version the componentizer documents. 2.7.9 and 2.7.11
+      # are known to misbehave against the Rhino 6 SDK the build targets.
+      - name: Install IronPython
+        run: choco install ironpython --version=2.7.8.1 -y
+
+      - name: Componentize
+        uses: compas-dev/compas-actions.ghpython_components@v5
+        with:
+          source: src/ghuser/components
+          target: dist/ghuser
+
+      - name: List build output
+        shell: pwsh
+        run: Get-ChildItem -Recurse dist/ghuser
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunlight-ghuser-components
+          path: dist/ghuser
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ghuser/*.ghuser

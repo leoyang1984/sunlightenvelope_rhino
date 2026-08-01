@@ -52,16 +52,43 @@ python3 tools/build_ghuser_code.py --check
 
 改了 R7 脚本却忘了重新派生时,这条会报 `STALE`。
 
-## 构建 .ghuser(需要 Rhino 机器)
+## 构建 .ghuser:优先用 CI
 
-用 [compas-dev/compas-actions.ghpython_components](https://github.com/compas-dev/compas-actions.ghpython_components)
-的 componentizer。
+`.github/workflows/build-ghuser.yml` 已经配好,**不需要任何人本地装
+IronPython**。
 
-依赖:
+触发方式:
 
-- 独立安装的 **IronPython 2.7**(Rhino 自带的那份不行);
+- 推送改动到 `src/ghuser/`、`src/rhino7/` 或 `tools/`;
+- 在 GitHub 的 Actions 页面手动 **Run workflow**;
+- 推送 `v*` 标签,构建产物会自动附加到 Release。
+
+工作流分两段:
+
+1. `validate`(Ubuntu)—— 跑派生同步检查和 bundle 校验,不需要 Windows,
+   秒级失败;
+2. `build`(Windows)—— 装 IronPython 2.7.8.1,用 componentizer 构建,
+   把 `.ghuser` 上传为 Artifact。
+
+公司那边拿组件只需要:进仓库 Actions 页面 → 打开最近一次成功的运行 →
+下载 `sunlight-ghuser-components` 压缩包。不用装工具链,不用 Rhino。
+
+发正式版本时打标签即可:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.ghuser` 会出现在 Release 的附件里,链接可以直接发给别人。
+
+## 本地构建(可选)
+
+需要在自己机器上出包时,依赖是:
+
+- 独立安装的 **IronPython 2.7**(推荐 2.7.8.1;2.7.9 和 2.7.11 已知与
+  构建目标的 Rhino 6 SDK 冲突),Rhino 自带的那份不行;
 - **GH_IO.dll**,通常在 `C:/Program Files/Rhino 7/Plug-ins/Grasshopper`。
-  componentizer 也能自己从 NuGet 拉。
 
 ```bash
 git clone https://github.com/compas-dev/compas-actions.ghpython_components
@@ -73,9 +100,15 @@ ipy compas-actions.ghpython_components/componentize_ipy.py ^
 
 产物在 `dist/ghuser/`(已加入 `.gitignore`)。
 
+注意 componentizer 还有一个 `componentize_cpy.py`。**它构建的是 Rhino 8
+的 Python 3 组件**,组件 GUID 和类型表都与 IronPython 版不同,对 R7 用错
+了工具。R7 必须走 `componentize_ipy.py`,也就是 action 的默认
+`interpreter: ironpython`。
+
 ## 安装
 
-把 `.ghuser` 复制到 Grasshopper 的 User Objects 文件夹:
+拿到 `.ghuser` 后(从 CI Artifact、Release 附件或本地构建),复制到
+Grasshopper 的 User Objects 文件夹:
 
 ```text
 Grasshopper → File → Special Folders → User Object Folder

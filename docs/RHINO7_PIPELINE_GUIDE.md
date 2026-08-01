@@ -28,8 +28,8 @@ DesignVolume → 组件1（切像素块）→ 组件2（日照 + 切削）
 ## 2. 建立组件的顺序
 
 > 本节描述的是粘贴脚本的接法。三个组件都另有 `.ghuser` 打包版本,端口
-> 是预置的,**不需要手工创建**;见
-> [构建 Grasshopper User Object](GHUSER_BUILD.md)。
+> 是预置的,**不需要手工创建**,成品就在仓库的 `dist/ghuser/rhino7/` 下,
+> 见[安装与使用 Grasshopper 组件](GHUSER_INSTALL.md)。
 > 除非你有理由用脚本版,否则直接装 `.ghuser` 更省事也更不容易出错。
 
 

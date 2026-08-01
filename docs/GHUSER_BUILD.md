@@ -90,8 +90,8 @@ IronPython**。
 
 工作流分两段:
 
-1. `validate`(Ubuntu)—— 跑派生同步检查和 bundle 校验,不需要 Windows,
-   秒级失败;
+1. `validate`(Ubuntu)—— 跑生成同步检查、bundle 校验,以及
+   `dist/ghuser/` 的过期检查,不需要 Windows,秒级失败;
 2. `build`(Windows,矩阵两路)—— `rhino7` 用 IronPython 2.7.8.1 构建,
    `rhino8` 用 cpython 模式构建,各自上传 Artifact。
 
@@ -102,18 +102,40 @@ IronPython**。
 | `sunlight-ghuser-rhino7` | Rhino 7 | `ironpython` |
 | `sunlight-ghuser-rhino8` | Rhino 8 | `cpython` |
 
-公司那边拿组件只需要:进仓库 Actions 页面 → 打开最近一次成功的运行 →
-下载对应版本的压缩包。不用装工具链,不用 Rhino。**只装与自己 Rhino
-版本匹配的那一套。**
+### 构建完之后要做的事
 
-发正式版本时打标签即可:
+CI 的 Artifact **需要 GitHub 账号才能下载,而且有保留期**,所以它不是
+给使用者的渠道,只是构建产物的暂存。真正对外的是仓库里的
+`dist/ghuser/`。
+
+改动落地后的完整流程:
+
+1. 推送改动,等 CI 的 `Build User Objects` 跑绿;
+2. 下载两个 Artifact:
+
+   ```bash
+   gh run download <run-id> -n sunlight-ghuser-rhino7
+   gh run download <run-id> -n sunlight-ghuser-rhino8
+   ```
+
+3. 用它们替换 `dist/ghuser/rhino7/` 和 `dist/ghuser/rhino8/`;
+4. 重新打戳并提交:
+
+   ```bash
+   python3 tools/stamp_ghuser_release.py --run-url <run 链接>
+   ```
+
+**第4步不能省。** 漏了的话 `dist/ghuser/` 里就是过期的二进制,而 CI 的
+`stamp_ghuser_release.py --check` 会在下一次推送时报 STALE。
+
+发正式版本时打标签:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-`.ghuser` 会出现在 Release 的附件里,链接可以直接发给别人。
+`.ghuser` 会自动挂到 Release 附件上,匿名可下,链接可以直接发给别人。
 
 ## 本地构建(可选)
 
@@ -154,8 +176,11 @@ R8 那套换 `componentize_cpy.py`,源目录用 `src/ghuser/rhino8`。
 
 ## 安装
 
-拿到 `.ghuser` 后(从 CI Artifact、Release 附件或本地构建),复制到
-Grasshopper 的 User Objects 文件夹:
+> 这一节是维护者视角的简要说明。使用者应当看
+> [安装与使用 Grasshopper 组件](GHUSER_INSTALL.md),那里有完整的下载、
+> 安装、验证和排查步骤。
+
+拿到 `.ghuser` 后,复制到 Grasshopper 的 User Objects 文件夹:
 
 ```text
 Grasshopper → File → Special Folders → User Object Folder

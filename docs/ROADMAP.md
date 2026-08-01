@@ -1,6 +1,6 @@
 # Solar Voxel Pipeline 开发路线图
 
-更新日期：2026-07-31
+更新日期：2026-08-01
 
 ## 固定组件编号
 
@@ -67,9 +67,12 @@ Grasshopper Python组件不会自动跟随仓库脚本更新。发生类型或�
 
 三个组件的 R7 和 R8 版本都已打包为 `.ghuser`,端口预置,不需要手工创建。
 bundle 由 `tools/build_ghuser_bundles.py` 从脚本和 `tools/ghuser_spec.py`
-生成,构建由 CI 完成,产物是 `sunlight-ghuser-rhino7` 和
-`sunlight-ghuser-rhino8` 两个 Artifact。详见
-[构建 Grasshopper User Object](GHUSER_BUILD.md)。
+生成,构建由 CI 完成。
+
+**构建好的成品提交在 `dist/ghuser/` 下**,匿名可下载,不需要 GitHub 账号
+也不需要编译。CI Artifact 需要登录且有保留期,只作为构建暂存。
+安装见[安装与使用 Grasshopper 组件](GHUSER_INSTALL.md),
+构建见[构建 Grasshopper User Object](GHUSER_BUILD.md)。
 
 打包状态:
 
@@ -78,11 +81,24 @@ bundle 由 `tools/build_ghuser_bundles.py` 从脚本和 `tools/ghuser_spec.py`
 | 六个 bundle 生成与同步校验 | 已通过 |
 | metadata 与 RunScript 签名一致性 | 已通过 |
 | CI 构建两套 `.ghuser` | 已通过 |
+| 成品过期检测(源码摘要) | 已通过 |
 | 在 Rhino 中装载并计算 | **待验收** |
 
 CI 能证明构建成功、产物大小合理,但 `.ghuser` 的内容经 GH_IO 压缩,
 不借助 Grasshopper 无法核对。**首次分发前必须在 Rhino 里装一次**,确认
 端口齐全、能算出与脚本版一致的结果。
+
+componentizer 每次运行都给端口分配新 GUID,`.ghuser` 因此不是字节可
+复现的,无法靠重新构建比对来判断仓库里的成品是否过期。改为对
+`src/ghuser` 取摘要记入 `dist/ghuser/MANIFEST.txt`,由
+`tools/stamp_ghuser_release.py --check` 校验,CI 每次都跑。
+
+**替换 `dist/ghuser/` 的内容后必须重新打戳**,否则下一次推送会报 STALE。
+
+### 打版本
+
+打 `v*` 标签会让 CI 把六个 `.ghuser` 自动挂到 Release 附件。建议**在
+Rhino 装载验收通过之后**再打第一个版本号。
 
 ## Rhino 7 分支
 

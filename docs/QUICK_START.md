@@ -94,16 +94,31 @@ Sun-Hour Metric: Longest Continuous Direct Sun
 
 没有 Context 时显示 `Unobstructed Fast Path`，属于正常状态。
 
-## Rhino 7 上的组件0、1、2
+## 组件0、1、2
 
-管线组件也有 R7 版本：
+管线组件有 Rhino 8 和 Rhino 7 两套实现，算法相同。
 
-| 组件 | 文件 | 输入 | 输出 |
-|---|---|---:|---:|
-| 组件0 | `src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py` | 17 | 4 |
-| 组件1 | `src/rhino7/SolarDesignVoxelizer_Rhino7_GhPython.py` | 4 | 8 |
-| 组件2 | `src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py` | 20 | 10 |
+**推荐直接装打包好的组件**，端口预置，不需要手工创建。成品就在仓库里：
 
-R7 没有 SDK-Mode，端口不会自动同步，必须先手工建好全部端口再粘贴代码。
-完整端口表、连接要点和注意事项见
-[Rhino 7 组件0、1、2使用指南](RHINO7_PIPELINE_GUIDE.md)。
+```text
+dist/ghuser/rhino8/    Rhino 8 用
+dist/ghuser/rhino7/    Rhino 7 用
+```
+
+下载、安装和使用见[安装与使用 Grasshopper 组件](GHUSER_INSTALL.md)。
+
+### 用脚本版
+
+需要改代码或有其他理由不用打包版时，脚本在这里：
+
+| 组件 | Rhino 8 | Rhino 7 | 输入 | 输出 |
+|---|---|---|---:|---:|
+| 组件0 | `src/rhino8/SolarConstraintSolver_Rhino8_SDK.py` | `src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py` | 17 | 4 |
+| 组件1 | `src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py` | `src/rhino7/SolarDesignVoxelizer_Rhino7_GhPython.py` | 4 | 8 |
+| 组件2 | `src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py` | `src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py` | 20 | 10 |
+
+R8 用 SDK-Mode，`RunScript` 签名会自动同步输入端。R7 没有 SDK-Mode，
+端口不会自动同步，**必须先手工建好全部端口再粘贴代码**。完整端口表、
+连接要点和注意事项见
+[Rhino 7 组件0、1、2使用指南](RHINO7_PIPELINE_GUIDE.md)——那份文档的
+接线规则对 R8 同样适用。

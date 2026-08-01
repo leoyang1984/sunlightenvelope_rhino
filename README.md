@@ -1,12 +1,22 @@
 # Sunlight Envelope｜日照可建空间分析
 
-本项目提供五个既有 Grasshopper Python 脚本，用于在地块边界内生成三维采样点，并计算每个采样点的累计或最长连续直射日照时间。另有一套由组件0、组件1和组件2组成的 Rhino 8 Solar Voxel Pipeline，用于双场景日照分析、设计体量体素化和日照约束切削；它不修改原有五个脚本。
+本项目提供五个既有 Grasshopper Python 脚本，用于在地块边界内生成三维采样点，并计算每个采样点的累计或最长连续直射日照时间。另有一套由组件0、组件1和组件2组成的 Solar Voxel Pipeline，用于双场景日照分析、设计体量体素化和日照约束切削；它不修改原有五个脚本。
 
-快速入口：
+管线组件有 Rhino 8 和 Rhino 7 两套实现，并已打包为 Grasshopper User
+Object，端口预置，拖出来即可接线。
 
-- [快速开始](docs/QUICK_START.md)
-- [Rhino 7 组件0、1、2使用指南](docs/RHINO7_PIPELINE_GUIDE.md)
-- [构建 Grasshopper User Object](docs/GHUSER_BUILD.md)
+## 我该从哪里开始
+
+| 你的情况 | 看这里 |
+|---|---|
+| 拿到 `.ghuser`，想装上用 | [安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md) |
+| 想用五个日照采样脚本 | [快速开始](docs/QUICK_START.md) |
+| 要在 Rhino 7 上手工粘贴管线脚本 | [Rhino 7 组件0、1、2使用指南](docs/RHINO7_PIPELINE_GUIDE.md) |
+| 要改代码或重新构建组件 | [构建 Grasshopper User Object](docs/GHUSER_BUILD.md)、[tools/README](tools/README.md) |
+| 想知道最近改了什么 | [更新日志](CHANGELOG.md) |
+
+其余文档：
+
 - [上海设计阶段参数](docs/SHANGHAI_DESIGN_PROFILE.md)
 - [Rhino / Grasshopper 上机验收清单](docs/ON_MACHINE_TESTS.md)
 - [示例文件说明](examples/README.md)
@@ -22,7 +32,9 @@ SunlightEnvelope_Rhino8/
 ├── README.md
 ├── src/
 │   ├── rhino8/        Rhino 8 Python 3 脚本
-│   └── rhino7/        Rhino 7 IronPython 2.7 脚本
+│   ├── rhino7/        Rhino 7 IronPython 2.7 脚本
+│   └── ghuser/        User Object 源 bundle（生成物，勿手改）
+├── tools/             bundle 生成与校验脚本
 ├── docs/              使用、上海参数与验收文档
 └── examples/          Rhino 8 测试模型
 ```

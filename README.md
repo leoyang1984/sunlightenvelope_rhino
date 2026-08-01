@@ -6,6 +6,7 @@
 
 - [快速开始](docs/QUICK_START.md)
 - [Rhino 7 组件0、1、2使用指南](docs/RHINO7_PIPELINE_GUIDE.md)
+- [构建 Grasshopper User Object](docs/GHUSER_BUILD.md)
 - [上海设计阶段参数](docs/SHANGHAI_DESIGN_PROFILE.md)
 - [Rhino / Grasshopper 上机验收清单](docs/ON_MACHINE_TESTS.md)
 - [示例文件说明](examples/README.md)

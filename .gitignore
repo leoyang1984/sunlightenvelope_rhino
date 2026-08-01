@@ -4,3 +4,7 @@ __pycache__/
 *.3dmbak
 *.gh.bak
 *.autosave
+
+# Built User Objects and the componentizer's downloaded GH_IO.dll
+dist/
+temp/

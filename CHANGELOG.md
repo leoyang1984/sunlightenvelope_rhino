@@ -46,6 +46,7 @@
 
 **新增文档**
 
+- [完整教程](docs/TUTORIAL.md)
 - [安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md)
 - [Rhino 7 组件0、1、2使用指南](docs/RHINO7_PIPELINE_GUIDE.md)
 - [构建 Grasshopper User Object](docs/GHUSER_BUILD.md)

@@ -9,7 +9,8 @@ Object，端口预置，拖出来即可接线。
 
 | 你的情况 | 看这里 |
 |---|---|
-| 拿到 `.ghuser`，想装上用 | [安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md) |
+| **第一次用，想完整跑一遍** | [完整教程](docs/TUTORIAL.md) |
+| 已经熟悉，只要装一下 | [安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md) |
 | 想用五个日照采样脚本 | [快速开始](docs/QUICK_START.md) |
 | 要在 Rhino 7 上手工粘贴管线脚本 | [Rhino 7 组件0、1、2使用指南](docs/RHINO7_PIPELINE_GUIDE.md) |
 | 要改代码或重新构建组件 | [构建 Grasshopper User Object](docs/GHUSER_BUILD.md)、[tools/README](tools/README.md) |

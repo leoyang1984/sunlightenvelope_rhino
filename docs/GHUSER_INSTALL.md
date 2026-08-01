@@ -3,6 +3,9 @@
 面向拿到 `.ghuser` 文件、要在 Grasshopper 里用起来的人。不需要读代码,
 也不需要装任何开发工具。
 
+第一次用建议直接看[完整教程](TUTORIAL.md),那份从装插件一路走到跑通
+整条流水线,带具体数值。本文是更简略的安装参考。
+
 想知道这些文件是怎么构建出来的,见
 [构建 Grasshopper User Object](GHUSER_BUILD.md)。
 

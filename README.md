@@ -34,6 +34,7 @@ SunlightEnvelope_Rhino8/
 │   ├── rhino8/        Rhino 8 Python 3 脚本
 │   ├── rhino7/        Rhino 7 IronPython 2.7 脚本
 │   └── ghuser/        User Object 源 bundle（生成物，勿手改）
+├── dist/ghuser/       构建好的 .ghuser，可直接下载安装
 ├── tools/             bundle 生成与校验脚本
 ├── docs/              使用、上海参数与验收文档
 └── examples/          Rhino 8 测试模型

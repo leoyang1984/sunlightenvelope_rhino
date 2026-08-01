@@ -5,6 +5,11 @@ __pycache__/
 *.gh.bak
 *.autosave
 
-# Built User Objects and the componentizer's downloaded GH_IO.dll
-dist/
+# The componentizer's downloaded GH_IO.dll
 temp/
+
+# dist/ghuser holds the prebuilt User Objects and is committed on purpose so
+# they can be downloaded without a GitHub account. Everything else under
+# dist/ is build scratch.
+dist/*
+!dist/ghuser/

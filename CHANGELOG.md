@@ -26,8 +26,10 @@
 三个组件的 R7 和 R8 版本都打包成了 `.ghuser`,端口预置,拖到画布上就能
 接线。脚本版需要按 Rhino 版本手工创建41个输入和22个输出,这一步没有了。
 
-构建由 CI 完成,产物是 `sunlight-ghuser-rhino7` 和 `sunlight-ghuser-rhino8`
-两个 Artifact。安装方法见[安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md)。
+构建好的组件直接提交在 `dist/ghuser/` 下,**不需要 GitHub 账号也不需要
+自己编译**,点进仓库就能下载。CI Artifact 需要登录才能下载而且有保留期,
+因此只作为备用渠道。安装方法见
+[安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md)。
 
 **构建工具链**
 
@@ -35,6 +37,8 @@
 - `tools/build_ghuser_bundles.py` —— 从脚本和端口定义生成六个 bundle;
 - `tools/check_ghuser_bundle.py` —— 不依赖 Rhino 的 bundle 校验;
 - `tools/make_icons.py` —— 生成 24×24 组件图标;
+- `tools/stamp_ghuser_release.py` —— 给提交的成品打戳,并检测其是否已经
+  落后于源码;
 - `.github/workflows/build-ghuser.yml` —— CI 构建两套 `.ghuser`。
 
 说明见 [tools/README.md](tools/README.md) 和

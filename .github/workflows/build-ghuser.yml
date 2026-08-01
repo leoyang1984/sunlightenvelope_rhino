@@ -51,6 +51,13 @@ jobs:
       - name: Validate bundle metadata
         run: python3 tools/check_ghuser_bundle.py
 
+      # dist/ghuser holds prebuilt components people download directly. The
+      # componentizer assigns fresh parameter GUIDs every run, so they cannot
+      # be checked by rebuilding; this compares a digest of the sources they
+      # were built from instead.
+      - name: Check prebuilt components are not stale
+        run: python3 tools/stamp_ghuser_release.py --check
+
   build:
     name: Build ${{ matrix.flavour }}
     needs: validate

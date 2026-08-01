@@ -1,0 +1,16 @@
+Prebuilt Grasshopper User Objects
+
+These files are built by .github/workflows/build-ghuser.yml and
+committed so they can be downloaded without a GitHub account.
+Do not edit them by hand.
+
+source-digest: 5f6ec36b6c4ff89f903deaab7d52ef01749f1ee891cc4765aba0b5d80d56f4b5
+built-from-run: https://github.com/leoyang1984/sunlightenvelope_rhino/actions/runs/30704731226
+
+files:
+  rhino7/SolarConstraintSolver.ghuser  16560 bytes  sha256:339b9b65802a42e818af0c4966cee963b30feecf71c4839ba3ddcca645c93076
+  rhino7/SolarDesignVoxelizer.ghuser  10049 bytes  sha256:3e92a39b2fcc87fdfac24ca843d033f8da2e51a109677c8175c114bad61c0a9b
+  rhino7/SolarVoxelOptimizer.ghuser  18125 bytes  sha256:ea9ead24ce795e859703beee804c134b879d6b947eef4fb54e23d46f8530e9df
+  rhino8/SolarConstraintSolver.ghuser  26491 bytes  sha256:3dfbbe0ad71f03820e1bddfcd932f932816dc28a49e8c4a2ea4e09fa054c591b
+  rhino8/SolarDesignVoxelizer.ghuser  16341 bytes  sha256:4ac71c84b9c37ca01793aa15c582cc597378d2979d75dc87d6a0c7322963efb2
+  rhino8/SolarVoxelOptimizer.ghuser  28175 bytes  sha256:3705b1c64b9147c9bada38ecf265ac5dd29b23fb6f4ce9d64abfdbd7a267cb57

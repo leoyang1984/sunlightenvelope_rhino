@@ -131,7 +131,20 @@ ipy compas-actions.ghpython_components/componentize_ipy.py ^
     --ghio "C:/Program Files/Rhino 7/Plug-ins/Grasshopper"
 ```
 
-产物在 `dist/ghuser/`(已加入 `.gitignore`)。
+产物在 `dist/ghuser/`。
+
+**这个目录是提交进仓库的**,不是构建垃圾。构建好的组件直接放在仓库里,
+使用者不需要 GitHub 账号也不需要编译就能拿到。替换其中的文件后必须重新
+打戳:
+
+```bash
+python3 tools/stamp_ghuser_release.py --run-url <CI 运行链接>
+```
+
+`MANIFEST.txt` 记录了 `src/ghuser` 的摘要。componentizer 每次运行都会给
+端口分配新的 GUID,所以 `.ghuser` **不是字节可复现的**,没法靠重新构建
+来比对。改用源码摘要:改了 bundle 却没更新二进制时,CI 的
+`stamp_ghuser_release.py --check` 会报 STALE。
 
 R8 那套换 `componentize_cpy.py`,源目录用 `src/ghuser/rhino8`。
 

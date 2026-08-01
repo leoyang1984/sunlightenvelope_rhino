@@ -14,6 +14,7 @@ CI 完成,见[构建 Grasshopper User Object](../docs/GHUSER_BUILD.md)。
 | `build_ghuser_bundles.py` | 从脚本和端口定义生成 `src/ghuser/` 下的六个 bundle |
 | `check_ghuser_bundle.py` | 校验 bundle 是否符合 componentizer 的要求 |
 | `make_icons.py` | 生成 `tools/icons/` 下的 24×24 组件图标,需要 Pillow |
+| `stamp_ghuser_release.py` | 给 `dist/ghuser/` 里提交的成品打戳并校验是否过期 |
 
 ## 数据流
 
@@ -89,6 +90,27 @@ componentizer 需要 Rhino 环境,通常只在 CI 的 Windows runner 上跑。�
   现成的 `Script_Instance`;
 - **`isAdvancedMode`** —— 只有 IronPython 版读这个字段;
 - **subcategory** —— 分开命名,两套同时装进 R8 时还能分清。
+
+## 提交的成品为什么需要打戳
+
+`dist/ghuser/` 里放着构建好的 `.ghuser`,使用者不需要账号也不用编译就能
+下载。风险是有人改了脚本或端口却忘了重新构建,仓库就会发出与源码不符的
+组件。
+
+componentizer 每次运行都给每个输入输出端口分配新 GUID
+(`System.Guid.NewGuid()`),所以 `.ghuser` **不是字节可复现的**,没办法靠
+重新构建再比对来判断新旧。可复现的是**构建的输入**:`src/ghuser` 下的
+全部内容。
+
+`stamp_ghuser_release.py` 把这份摘要记进 `dist/ghuser/MANIFEST.txt`,
+`--check` 重算并比对。bundle 变了而二进制没跟上时会报 STALE,CI 里也跑
+这一条。
+
+替换 `dist/ghuser/` 的内容后必须重新打戳:
+
+```bash
+python3 tools/stamp_ghuser_release.py --run-url <CI 运行链接>
+```
 
 ## 一个已经踩过的坑
 

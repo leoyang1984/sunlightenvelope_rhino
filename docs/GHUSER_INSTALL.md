@@ -37,25 +37,44 @@ DesignVolume → 组件1（切体素）→ 组件2（日照 + 切削）
 两套组件,算法完全相同,只是运行环境不同。**按你的 Rhino 版本选一套装,
 不要两套都装。**
 
-| 你的 Rhino | 下载 | 装完出现在 |
+| 你的 Rhino | 取哪个目录 | 装完出现在 |
 |---|---|---|
-| Rhino 8 | `sunlight-ghuser-rhino8` | Sunlight → **Voxel Pipeline** |
-| Rhino 7 | `sunlight-ghuser-rhino7` | Sunlight → **Voxel Pipeline (IronPython)** |
+| Rhino 8 | `dist/ghuser/rhino8/` | Sunlight → **Voxel Pipeline** |
+| Rhino 7 | `dist/ghuser/rhino7/` | Sunlight → **Voxel Pipeline (IronPython)** |
 
 分组名特意分开,是为了万一两套都装进了 Rhino 8 还能分清。
 
 ## 3. 下载
 
-进仓库的 **Actions** 页面 → 打开最近一次成功的 **Build User Objects**
-运行 → 页面底部 **Artifacts** 区,下载对应版本的压缩包。
+仓库里直接放了构建好的组件,**不需要 GitHub 账号,也不用自己编译**:
 
-也可以用命令行:
-
-```bash
-gh run download --repo leoyang1984/sunlightenvelope_rhino -n sunlight-ghuser-rhino8
+```text
+dist/ghuser/rhino8/    Rhino 8 用
+dist/ghuser/rhino7/    Rhino 7 用
 ```
 
-解压后是三个 `.ghuser` 文件。
+在 GitHub 上打开对应目录,逐个点开文件,右上角 **Download raw file**。
+或者直接下载整个仓库的 ZIP(绿色 **Code** 按钮 → **Download ZIP**),解压
+后到 `dist/ghuser/` 里取。
+
+命令行:
+
+```bash
+git clone https://github.com/leoyang1984/sunlightenvelope_rhino
+# 组件在 sunlightenvelope_rhino/dist/ghuser/
+```
+
+### 其他渠道
+
+**Release 附件** —— 打了版本标签的正式版在
+[Releases](https://github.com/leoyang1984/sunlightenvelope_rhino/releases)
+页面,同样匿名可下,链接可以直接发给别人。
+
+**CI Artifact** —— 每次构建的产物在 Actions 页面。**需要登录 GitHub**
+才能下载,而且有保留期,过期就没了。只在需要某次特定构建时才用这个。
+
+`dist/ghuser/MANIFEST.txt` 记录了这批文件构建自哪次运行、以及源码摘要,
+可以用来确认手上的文件是不是最新的。
 
 ## 4. 安装
 
@@ -155,7 +174,8 @@ Mesh。R8 版直接支持。
 
 ## 8. 更新
 
-下载新的 Artifact,覆盖 User Objects 文件夹里的旧文件,重启 Grasshopper。
+重新下载 `dist/ghuser/` 里对应版本的文件,覆盖 User Objects 文件夹里的
+旧文件,重启 Grasshopper。
 
 **注意一个限制:已经放在画布上的组件不会跟着更新。** `.ghuser` 在拖到
 画布的那一刻把代码复制进了组件实例,更新只影响**之后新拖出来的**。旧

@@ -62,10 +62,6 @@ jobs:
     name: Build ${{ matrix.flavour }}
     needs: validate
     runs-on: windows-latest
-    # The workflow token is read-only by default, so the release step needs
-    # this to create the release and upload the .ghuser assets.
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -115,8 +111,35 @@ jobs:
           path: dist/ghuser/${{ matrix.flavour }}
           if-no-files-found: error
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  # Publishing runs once, after both flavours are built. Doing it inside the
+  # matrix made the two jobs race to create the same release, and both
+  # flavours use identical file names, so they would also have collided as
+  # release assets. Each flavour is published as one zip instead.
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/ghuser/${{ matrix.flavour }}/*.ghuser
+          pattern: sunlight-ghuser-*
+          path: artifacts
+
+      - name: Package each flavour
+        run: |
+          set -eu
+          mkdir -p release
+          for flavour in rhino7 rhino8; do
+            src="artifacts/sunlight-ghuser-$flavour"
+            test -d "$src"
+            (cd "$src" && zip -q -r "../../release/sunlight-ghuser-$flavour.zip" .)
+          done
+          ls -l release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          fail_on_unmatched_files: true

@@ -85,6 +85,29 @@ P{n}[i] 对应 H{n}[i]
 - Mesh、Brep、Extrusion、Surface 应正常参与遮挡。
 - SubD 应被安全忽略，并在 I 中出现警告；需要时先转 Mesh 或 Brep。
 
+### 7.1 R7 组件0、1、2
+
+使用方法见 [Rhino 7 组件0、1、2使用指南](RHINO7_PIPELINE_GUIDE.md)。
+上机时额外确认：
+
+- 全部端口在粘贴代码**之前**手工建好，名称大小写与代码一致。
+- 组件1的 `VoxelIDs`、`ColumnIDs`、`LayerIDs` 直接进组件2，中间没有
+  Sort、Cull 或 Dispatch。
+- 两个组件0实例的太阳参数、`TimeStep`、`MinimumContinuousMinutes` 和
+  `RequiredSunHours` 完全一致。
+- SubD 输入应在 `Report` 中出现警告而不是静默消失。
+- 按 ESC 中断时 `Report` 显示 `Status: Cancelled`，且不输出半套数据。
+
+结果对齐判据（与 R8 已验收基线一致）：
+
+```text
+组件1  560个候选体素，38个边界裁切体素，Boolean失败0
+组件2  移除104个体素，保留率 86.22%
+       FinalSunHours = [2.85, 2.45, 2.00]
+```
+
+偏差排查顺序见使用指南第6节。
+
 ## 8. 性能分级
 
 先以低负载启动：

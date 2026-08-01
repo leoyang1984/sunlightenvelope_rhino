@@ -63,6 +63,46 @@ Grasshopper Python组件不会自动跟随仓库脚本更新。发生类型或�
 必须先确认画布组件已经完整替换为最新脚本；端口名称正确不代表内部代码
 是最新版本。
 
+## Rhino 7 分支
+
+三个组件各有一个 IronPython 2.7 版本，供没有 Rhino 8 的协作方使用：
+
+- `src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py`
+- `src/rhino7/SolarDesignVoxelizer_Rhino7_GhPython.py`
+- `src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py`
+
+由对应 R8 版本逐行回移，算法、编号规则和输出契约不变。适配项：
+
+| 项目 | 处理方式 |
+|---|---|
+| `RunScript` 签名与 `GH_ScriptInstance` | 改为模块级 `execute(...)` 入口，端口手工创建 |
+| `list[...]` 类型注解 | 随 SDK 包装层一并移除 |
+| `nonlocal` | 改用单元素列表可变格，沿用文件中既有的计数器写法 |
+| `time.perf_counter()` | 改为 `time.time()` |
+| `timedelta.total_seconds()` 与 `timedelta / 2` | 改用 `timedelta_to_seconds()` 辅助函数 |
+| SubD | 安全忽略并输出警告 |
+| 字典遍历顺序 | 顺序可观测处改用 `collections.OrderedDict` |
+
+最后一项是唯一会影响结果的适配。组件2的 `choose_best_action` 在
+`comparison_key` 打平时保留先遇到的候选，CPython 3 靠字典插入序保证
+可复现，IronPython 2.7 不保证。`action_sources` 因此改为 `OrderedDict`，
+以复刻 R8 的遍历顺序。`column_top_closure` 内的 `lowest_layer_by_column`
+返回集合，顺序不可观测，保持普通字典。
+
+### R7 验收状态
+
+| 环节 | 状态 |
+|---|---|
+| IronPython 2.7 语法兼容性扫描 | 已通过 |
+| 与 R8 原件逐行差异复核 | 已通过 |
+| 字典顺序确定性审计 | 已通过 |
+| Rhino 7 实机验收 | **待验收** |
+
+R7 实机验收的判据是与 R8 结果一致：用同一组输入运行组件1 → 组件2，
+`FinalSunHours` 应为 `[2.85, 2.45, 2.00]`，保留率 86.22%，移除104个体素。
+出现偏差时优先检查端口 Access 设置和 SubD 输入，再检查体素编号是否
+直接来自组件1。
+
 ## 下一阶段计划
 
 ### P-Verify：完成端到端独立复核

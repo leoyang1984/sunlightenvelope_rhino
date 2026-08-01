@@ -1,0 +1,2178 @@
+"""
+Project source: src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py
+
+Solar Voxel Optimizer MVP
+Rhino 7 Grasshopper GhPython Script Component
+IronPython 2.7
+
+Purpose
+-------
+Optimize a designer-controlled voxelized DesignVolume while preserving the
+same solar rules used by SolarConstraintSolver_Rhino7_GhPython.py:
+
+- Context-only baseline versus Context + Design comparison.
+- Accumulated direct sun.
+- Minimum qualifying continuous-segment duration.
+- Required sun-hour threshold.
+- Design-blocking events only when Context is clear.
+
+The optimizer builds a complete many-to-many mapping:
+
+    Protected Point + Time Sample -> every intersected voxel
+
+It then removes voxels with a deterministic greedy heuristic. A voxel may only
+be removed together with all currently kept voxels above it in the same
+column. If the designer's input already contains a vertical gap, the occupied
+layers on either side remain part of that same XY column.
+
+Optimization objective
+----------------------
+Minimize newly removed voxel volume while reducing the total qualified
+sun-hour deficit of all baseline-solvable protected points. This is a
+transparent MVP heuristic, not a proof of the global maximum-volume solution.
+
+Rhino 7 has no SDK-Mode. The GhPython component does not synchronize its
+ports from a method signature, so all 20 inputs and all 10 outputs must be
+created and renamed by hand. Names are case-sensitive.
+
+GhPython input parameter access settings
+----------------------------------------
+ProtectedPoints            : List Access, Point3d
+Voxels                     : List Access, GeometryBase
+VoxelIDs                   : List Access, int
+ColumnIDs                  : List Access, int
+LayerIDs                   : List Access, int
+ContextBuildings           : List Access, GeometryBase
+North                      : Item Access, Vector3d
+Latitude                   : Item Access, float
+Longitude                  : Item Access, float
+TimeZone                   : Item Access, float
+Year                       : Item Access, int
+Month                      : Item Access, int
+Day                        : Item Access, int
+StartHour                  : Item Access, float
+EndHour                    : Item Access, float
+TimeStep                   : Item Access, float, minutes
+MinimumContinuousMinutes   : Item Access, float, minutes
+RequiredSunHours           : Item Access, float
+MaxIterations              : Item Access, int
+Run                        : Item Access, bool
+
+GhPython output parameter names
+-------------------------------
+KeptVoxels, RemovedVoxels, OptimizedColumns, KeepMask, InitialSunHours,
+FinalSunHours, VoxelImpactHours, EventVoxelPaths, IterationData, Report
+
+Difference from the Rhino 8 version
+-----------------------------------
+SubD is deliberately ignored for stable Rhino 7 compatibility, matching
+SunlightEnvelope_Rhino7_GhPython.py. Convert SubD to Brep or Mesh in Rhino
+before connecting it.
+
+Determinism note
+----------------
+Rhino 8 runs on CPython 3, whose dictionaries preserve insertion order, and
+the greedy search keeps the first candidate on a comparison-key tie. An
+IronPython 2.7 dictionary has no such guarantee, so the two dictionaries whose
+iteration order is observable use collections.OrderedDict. This reproduces the
+Rhino 8 traversal order exactly and keeps the greedy result reproducible.
+"""
+
+import math
+import time
+from collections import OrderedDict
+from datetime import datetime, timedelta
+
+import Rhino
+import Rhino.Geometry as rg
+import scriptcontext as sc
+import System
+
+from Grasshopper import DataTree
+from Grasshopper.Kernel.Data import GH_Path
+
+
+EPSILON = 1.0e-9
+RAY_ORIGIN_OFFSET_FACTOR = 1.0e-7
+MAX_PROTECTED_POINTS = 10000
+MAX_VOXELS = 10000
+MAX_RAY_VOXEL_TESTS = 20000000
+MAX_OPTIMIZATION_ITERATIONS = 10000
+ESCAPE_CHECK_INTERVAL = 2000
+
+
+# =============================================================================
+# BASIC HELPERS
+# =============================================================================
+
+def unwrap_gh_value(value):
+    """Unwrap common Grasshopper goo values passed through SDK parameters."""
+    if value is None:
+        return None
+
+    try:
+        unwrapped = value.Value
+
+        if unwrapped is not None:
+            return unwrapped
+    except Exception:
+        pass
+
+    try:
+        script_variable = value.ScriptVariable()
+
+        if script_variable is not None:
+            return script_variable
+    except Exception:
+        pass
+
+    return value
+
+
+def normalize_sequence(value):
+    """Return a Python list for a GH List input or single fallback value."""
+    if value is None:
+        return []
+
+    if isinstance(value, basestring):
+        return [value]
+
+    if isinstance(value, (list, tuple)):
+        return list(value)
+
+    try:
+        return list(value)
+    except Exception:
+        return [value]
+
+
+def resolve_rhino_geometry(value):
+    """Resolve GH goo, Rhino document Guid, ObjRef, or RhinoObject geometry."""
+    value = unwrap_gh_value(value)
+
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, System.Guid):
+            document = Rhino.RhinoDoc.ActiveDoc
+
+            if document is None:
+                return value
+
+            rhino_object = document.Objects.FindId(value)
+
+            if rhino_object is not None:
+                return rhino_object.Geometry
+    except Exception:
+        pass
+
+    try:
+        if isinstance(value, Rhino.DocObjects.ObjRef):
+            geometry = value.Geometry()
+
+            if geometry is not None:
+                return geometry
+    except Exception:
+        pass
+
+    try:
+        geometry = value.Geometry
+
+        if isinstance(geometry, rg.GeometryBase):
+            return geometry
+    except Exception:
+        pass
+
+    return value
+
+
+def is_finite_number(value):
+    """Return True when value converts to a finite float."""
+    try:
+        number = float(unwrap_gh_value(value))
+        return not math.isnan(number) and not math.isinf(number)
+    except Exception:
+        return False
+
+
+def format_number(value, digits=3):
+    """Format a number for Grasshopper Panel output."""
+    try:
+        return ("{0:." + str(digits) + "f}").format(float(value))
+    except Exception:
+        return str(value)
+
+
+def clamp(value, minimum, maximum):
+    """Clamp a number to an inclusive range."""
+    return max(minimum, min(maximum, value))
+
+
+def geometry_type_name(geometry):
+    """Return a readable Rhino or Python type name."""
+    if geometry is None:
+        return "None"
+
+    try:
+        return geometry.GetType().Name
+    except Exception:
+        return type(geometry).__name__
+
+
+def check_escape_key():
+    """Return True when Rhino reports Escape."""
+    try:
+        return bool(sc.escape_test(False))
+    except Exception:
+        return False
+
+
+def timedelta_to_seconds(delta):
+    """
+    Return total seconds without relying on timedelta division.
+
+    This form is compatible with IronPython 2.7 and also preserves
+    microseconds.
+    """
+    return (
+        delta.days * 86400.0 +
+        delta.seconds +
+        delta.microseconds / 1000000.0
+    )
+
+
+def active_document_tolerance():
+    """Return a safe Rhino model tolerance."""
+    document = Rhino.RhinoDoc.ActiveDoc
+
+    if document is None:
+        return 0.001
+
+    try:
+        return max(float(document.ModelAbsoluteTolerance), EPSILON)
+    except Exception:
+        return 0.001
+
+
+def active_document_units():
+    """Return the active Rhino unit-system name."""
+    document = Rhino.RhinoDoc.ActiveDoc
+
+    if document is None:
+        return "Unknown"
+
+    try:
+        return str(document.ModelUnitSystem)
+    except Exception:
+        return "Unknown"
+
+
+def validate_integer(value, name, errors):
+    """Validate and return an integer-valued numeric input."""
+    value = unwrap_gh_value(value)
+
+    if not is_finite_number(value):
+        errors.append("{0} must be a finite integer.".format(name))
+        return None
+
+    integer_value = int(value)
+
+    if abs(float(value) - integer_value) > EPSILON:
+        errors.append("{0} must be an integer.".format(name))
+        return None
+
+    return integer_value
+
+
+# =============================================================================
+# GEOMETRY CONVERSION
+# =============================================================================
+
+def mesh_from_brep(brep):
+    """Create one joined valid analysis mesh from a Brep."""
+    if brep is None or not brep.IsValid:
+        return None
+
+    try:
+        parts = rg.Mesh.CreateFromBrep(
+            brep,
+            rg.MeshingParameters.FastRenderMesh
+        )
+    except Exception:
+        return None
+
+    if not parts:
+        return None
+
+    joined = rg.Mesh()
+
+    for part in parts:
+        if part is not None and part.IsValid:
+            joined.Append(part)
+
+    try:
+        joined.Vertices.CombineIdentical(True, True)
+        joined.Faces.CullDegenerateFaces()
+        joined.Compact()
+    except Exception:
+        pass
+
+    if not joined.IsValid or joined.Faces.Count == 0:
+        return None
+
+    return joined
+
+
+def geometry_to_mesh(geometry):
+    """Convert a supported Rhino geometry object to one mesh."""
+    geometry = resolve_rhino_geometry(geometry)
+
+    if geometry is None:
+        return None
+
+    if isinstance(geometry, rg.Mesh):
+        if not geometry.IsValid:
+            return None
+
+        duplicate = geometry.DuplicateMesh()
+
+        if duplicate is not None and duplicate.IsValid:
+            return duplicate
+
+        return None
+
+    if isinstance(geometry, rg.Brep):
+        return mesh_from_brep(geometry)
+
+    if isinstance(geometry, rg.Extrusion):
+        try:
+            return mesh_from_brep(geometry.ToBrep())
+        except Exception:
+            return None
+
+    if isinstance(geometry, rg.Surface):
+        try:
+            return mesh_from_brep(geometry.ToBrep())
+        except Exception:
+            return None
+
+    return None
+
+
+def build_context_mesh(context_values):
+    """Build one context mesh; an empty list is a valid unobstructed baseline."""
+    values = normalize_sequence(context_values)
+    warnings = []
+
+    if not values:
+        warnings.append(
+            "ContextBuildings is empty. Baseline rays are unobstructed."
+        )
+        return None, [], warnings, 0
+
+    joined = rg.Mesh()
+    source_count = 0
+
+    for index, value in enumerate(values):
+        geometry = resolve_rhino_geometry(value)
+        mesh = geometry_to_mesh(geometry)
+
+        if mesh is None:
+            warnings.append(
+                "ContextBuildings item {0} was ignored. Type: {1}."
+                .format(index, geometry_type_name(geometry))
+            )
+            continue
+
+        joined.Append(mesh)
+        source_count += 1
+
+    if source_count == 0:
+        warnings.append(
+            "ContextBuildings contains no usable geometry. Baseline rays "
+            "are unobstructed."
+        )
+        return None, [], warnings, 0
+
+    try:
+        joined.Vertices.CombineIdentical(True, True)
+        joined.Faces.CullDegenerateFaces()
+        joined.Compact()
+    except Exception:
+        pass
+
+    if not joined.IsValid or joined.Faces.Count == 0:
+        return (
+            None,
+            ["ContextBuildings produced an invalid joined mesh."],
+            warnings,
+            0
+        )
+
+    return joined, [], warnings, source_count
+
+
+def geometry_volume_from_box(geometry):
+    """Return the true solid volume plus its world bounding box."""
+    box = geometry.GetBoundingBox(True)
+
+    if not box.IsValid:
+        return 0.0, box
+
+    mass_properties = None
+
+    try:
+        mass_properties = rg.VolumeMassProperties.Compute(geometry)
+
+        if mass_properties is None:
+            return 0.0, box
+
+        volume = abs(float(mass_properties.Volume))
+    except Exception:
+        volume = 0.0
+    finally:
+        if mass_properties is not None:
+            try:
+                mass_properties.Dispose()
+            except Exception:
+                pass
+
+    return volume, box
+
+
+def prepare_voxels(voxels, voxel_ids, column_ids, layer_ids):
+    """Validate synchronized voxel lists and create analysis records."""
+    errors = []
+    warnings = []
+    geometry_values = normalize_sequence(voxels)
+    id_values = normalize_sequence(voxel_ids)
+    column_values = normalize_sequence(column_ids)
+    layer_values = normalize_sequence(layer_ids)
+
+    if not geometry_values:
+        errors.append("Voxels is empty.")
+        return [], {}, errors, warnings
+
+    if len(geometry_values) > MAX_VOXELS:
+        errors.append(
+            "Voxels contains {0} items, exceeding the safety limit {1}."
+            .format(len(geometry_values), MAX_VOXELS)
+        )
+
+    expected_count = len(geometry_values)
+
+    for name, values in [
+        ("VoxelIDs", id_values),
+        ("ColumnIDs", column_values),
+        ("LayerIDs", layer_values)
+    ]:
+        if len(values) != expected_count:
+            errors.append(
+                "{0} must contain {1} items to match Voxels; received {2}."
+                .format(name, expected_count, len(values))
+            )
+
+    if errors:
+        return [], {}, errors, warnings
+
+    records = []
+    seen_voxel_ids = set()
+    # OrderedDict keeps the ColumnID warning and error lines in the same order
+    # as Rhino 8, where a CPython 3 dictionary preserves insertion order.
+    column_members = OrderedDict()
+
+    for index, geometry_value in enumerate(geometry_values):
+        geometry = resolve_rhino_geometry(geometry_value)
+        voxel_id = validate_integer(
+            id_values[index],
+            "VoxelIDs item {0}".format(index),
+            errors
+        )
+        column_id = validate_integer(
+            column_values[index],
+            "ColumnIDs item {0}".format(index),
+            errors
+        )
+        layer_id = validate_integer(
+            layer_values[index],
+            "LayerIDs item {0}".format(index),
+            errors
+        )
+
+        if voxel_id is not None:
+            if voxel_id < 0:
+                errors.append(
+                    "VoxelIDs item {0} cannot be negative.".format(index)
+                )
+
+            if voxel_id in seen_voxel_ids:
+                errors.append(
+                    "VoxelIDs contains duplicate id {0}.".format(voxel_id)
+                )
+            seen_voxel_ids.add(voxel_id)
+
+        if column_id is not None and column_id < 0:
+            errors.append(
+                "ColumnIDs item {0} cannot be negative.".format(index)
+            )
+
+        if layer_id is not None and layer_id < 0:
+            errors.append(
+                "LayerIDs item {0} cannot be negative.".format(index)
+            )
+
+        mesh = geometry_to_mesh(geometry)
+
+        if mesh is None:
+            errors.append(
+                "Voxels item {0} cannot be converted to a valid mesh. "
+                "Type: {1}.".format(
+                    index,
+                    geometry_type_name(geometry)
+                )
+            )
+            continue
+
+        if not mesh.IsClosed:
+            errors.append(
+                "Voxels item {0} must be a closed solid.".format(index)
+            )
+            continue
+
+        try:
+            volume, box = geometry_volume_from_box(geometry)
+        except Exception:
+            volume = 0.0
+            box = rg.BoundingBox.Empty
+
+        if volume <= EPSILON or not box.IsValid:
+            errors.append(
+                "Voxels item {0} has no valid positive solid volume."
+                .format(index)
+            )
+            continue
+
+        record = {
+            "index": index,
+            "id": voxel_id,
+            "column_id": column_id,
+            "layer_id": layer_id,
+            "geometry": geometry,
+            "mesh": mesh,
+            "bbox": box,
+            "volume": volume
+        }
+        records.append(record)
+        column_members.setdefault(column_id, []).append(index)
+
+    if errors:
+        return [], {}, errors, warnings
+
+    for column_id, member_indices in column_members.items():
+        member_indices.sort(
+            key=lambda member_index: records[member_index]["layer_id"]
+        )
+        seen_layers = set()
+        ordered_layers = []
+
+        for member_index in member_indices:
+            layer_id = records[member_index]["layer_id"]
+            ordered_layers.append(layer_id)
+
+            if layer_id in seen_layers:
+                errors.append(
+                    "ColumnID {0} contains duplicate LayerID {1}."
+                    .format(column_id, layer_id)
+                )
+
+            seen_layers.add(layer_id)
+
+        for previous_layer, current_layer in zip(
+            ordered_layers,
+            ordered_layers[1:]
+        ):
+            if current_layer != previous_layer + 1:
+                warnings.append(
+                    "ColumnID {0} has an input-geometry gap between "
+                    "LayerID {1} and {2}; occupied layers remain valid and "
+                    "top-down removal still follows global layer order."
+                    .format(
+                        column_id,
+                        previous_layer,
+                        current_layer
+                    )
+                )
+
+    return records, column_members, errors, warnings
+
+
+def create_optimized_columns(voxel_records, column_members, keep_mask):
+    """Combine exact kept voxel meshes per column without filling gaps."""
+    columns = []
+
+    for column_id in sorted(column_members):
+        kept_indices = [
+            index
+            for index in column_members[column_id]
+            if keep_mask[index]
+        ]
+
+        if not kept_indices:
+            continue
+
+        combined = rg.Mesh()
+
+        for index in kept_indices:
+            combined.Append(voxel_records[index]["mesh"])
+
+        try:
+            combined.Vertices.CombineIdentical(True, True)
+            combined.Faces.CullDegenerateFaces()
+            combined.Compact()
+        except Exception:
+            pass
+
+        if combined.IsValid and combined.Faces.Count > 0:
+            columns.append(combined)
+
+    return columns
+
+
+# =============================================================================
+# INPUT VALIDATION
+# =============================================================================
+
+def validate_analysis_inputs(
+    protected_points,
+    latitude,
+    longitude,
+    timezone,
+    year,
+    month,
+    day,
+    start_hour,
+    end_hour,
+    time_step,
+    minimum_continuous_minutes,
+    required_sun_hours,
+    max_iterations
+):
+    """Validate non-geometry inputs and normalize protected points."""
+    errors = []
+    warnings = []
+    points = []
+    point_values = normalize_sequence(protected_points)
+
+    if not point_values:
+        errors.append("ProtectedPoints is empty.")
+    elif len(point_values) > MAX_PROTECTED_POINTS:
+        errors.append(
+            "ProtectedPoints exceeds the safety limit of {0}."
+            .format(MAX_PROTECTED_POINTS)
+        )
+
+    for index, value in enumerate(point_values):
+        value = resolve_rhino_geometry(value)
+
+        if isinstance(value, rg.Point):
+            value = value.Location
+
+        try:
+            point = rg.Point3d(value)
+        except Exception:
+            errors.append(
+                "ProtectedPoints item {0} cannot be converted to Point3d. "
+                "Received: {1}.".format(
+                    index,
+                    geometry_type_name(value)
+                )
+            )
+            continue
+
+        if not point.IsValid:
+            errors.append(
+                "ProtectedPoints item {0} is invalid.".format(index)
+            )
+            continue
+
+        points.append(point)
+
+    # OrderedDict keeps the Report error lines in the same order as Rhino 8.
+    numeric_values = OrderedDict([
+        ("Latitude", latitude),
+        ("Longitude", longitude),
+        ("TimeZone", timezone),
+        ("StartHour", start_hour),
+        ("EndHour", end_hour),
+        ("TimeStep", time_step),
+        ("MinimumContinuousMinutes", minimum_continuous_minutes),
+        ("RequiredSunHours", required_sun_hours)
+    ])
+
+    for name, value in numeric_values.items():
+        if not is_finite_number(value):
+            errors.append("{0} must be a finite number.".format(name))
+
+    year_value = validate_integer(year, "Year", errors)
+    month_value = validate_integer(month, "Month", errors)
+    day_value = validate_integer(day, "Day", errors)
+    iteration_value = validate_integer(
+        max_iterations,
+        "MaxIterations",
+        errors
+    )
+
+    if (
+        year_value is not None and
+        month_value is not None and
+        day_value is not None
+    ):
+        try:
+            datetime(year_value, month_value, day_value)
+        except Exception:
+            errors.append("Year, Month, and Day do not form a valid date.")
+
+    if iteration_value is not None:
+        if iteration_value <= 0:
+            errors.append("MaxIterations must be greater than zero.")
+        elif iteration_value > MAX_OPTIMIZATION_ITERATIONS:
+            errors.append(
+                "MaxIterations exceeds the safety limit of {0}."
+                .format(MAX_OPTIMIZATION_ITERATIONS)
+            )
+
+    if all(is_finite_number(value) for value in numeric_values.values()):
+        latitude_value = float(unwrap_gh_value(latitude))
+        longitude_value = float(unwrap_gh_value(longitude))
+        timezone_value = float(unwrap_gh_value(timezone))
+        start_value = float(unwrap_gh_value(start_hour))
+        end_value = float(unwrap_gh_value(end_hour))
+        step_value = float(unwrap_gh_value(time_step))
+        minimum_value = float(
+            unwrap_gh_value(minimum_continuous_minutes)
+        )
+        required_value = float(unwrap_gh_value(required_sun_hours))
+
+        if latitude_value < -90.0 or latitude_value > 90.0:
+            errors.append("Latitude must be between -90 and 90 degrees.")
+
+        if longitude_value < -180.0 or longitude_value > 180.0:
+            errors.append("Longitude must be between -180 and 180 degrees.")
+
+        if timezone_value < -14.0 or timezone_value > 14.0:
+            errors.append("TimeZone must be between UTC-14 and UTC+14.")
+
+        if start_value < 0.0 or start_value > 24.0:
+            errors.append("StartHour must be between 0 and 24.")
+
+        if end_value < 0.0 or end_value > 24.0:
+            errors.append("EndHour must be between 0 and 24.")
+
+        if end_value <= start_value:
+            errors.append("EndHour must be greater than StartHour.")
+
+        if step_value <= 0.0:
+            errors.append("TimeStep must be greater than zero.")
+
+        if minimum_value < 0.0:
+            errors.append(
+                "MinimumContinuousMinutes cannot be negative."
+            )
+        elif minimum_value > 0.0 and step_value > minimum_value:
+            warnings.append(
+                "TimeStep is larger than MinimumContinuousMinutes; "
+                "continuity cannot be resolved reliably."
+            )
+
+        if required_value < 0.0:
+            errors.append("RequiredSunHours cannot be negative.")
+
+    return errors, warnings, points, iteration_value
+
+
+def validate_and_normalize_north(north):
+    """Return normalized world north and derived east vectors."""
+    errors = []
+    north = unwrap_gh_value(north)
+
+    try:
+        north_vector = rg.Vector3d(north)
+    except Exception:
+        errors.append("North must be convertible to Vector3d.")
+        return errors, None, None
+
+    north_vector.Z = 0.0
+
+    if north_vector.IsTiny(EPSILON) or not north_vector.Unitize():
+        errors.append("North must have a non-zero horizontal component.")
+        return errors, None, None
+
+    east_vector = rg.Vector3d.CrossProduct(
+        north_vector,
+        rg.Vector3d.ZAxis
+    )
+
+    if east_vector.IsTiny(EPSILON) or not east_vector.Unitize():
+        errors.append("East could not be derived from North.")
+        return errors, None, None
+
+    return errors, north_vector, east_vector
+
+
+# =============================================================================
+# TIME AND SOLAR POSITION
+# =============================================================================
+
+def decimal_hour_to_datetime(base_date, decimal_hour):
+    """Convert a local decimal clock hour into a datetime."""
+    total_seconds = int(round(float(decimal_hour) * 3600.0))
+    return base_date + timedelta(seconds=total_seconds)
+
+
+def generate_time_intervals(
+    year,
+    month,
+    day,
+    start_hour,
+    end_hour,
+    time_step_minutes
+):
+    """Generate midpoint samples with exact interval integration weights."""
+    base_date = datetime(int(year), int(month), int(day), 0, 0, 0)
+    current_start = decimal_hour_to_datetime(base_date, start_hour)
+    end_datetime = decimal_hour_to_datetime(base_date, end_hour)
+    requested_step = timedelta(minutes=float(time_step_minutes))
+    intervals = []
+
+    while current_start < end_datetime:
+        current_end = min(current_start + requested_step, end_datetime)
+        interval_delta = current_end - current_start
+        interval_seconds = timedelta_to_seconds(interval_delta)
+        intervals.append(
+            {
+                "start": current_start,
+                "end": current_end,
+                "datetime": current_start + timedelta(
+                    seconds=interval_seconds * 0.5
+                ),
+                "duration_hours": interval_seconds / 3600.0
+            }
+        )
+        current_start = current_end
+
+    return intervals
+
+
+def fractional_year_radians(local_datetime):
+    """Calculate the NOAA fractional-year approximation."""
+    day_of_year = local_datetime.timetuple().tm_yday
+    hour = (
+        local_datetime.hour +
+        local_datetime.minute / 60.0 +
+        local_datetime.second / 3600.0
+    )
+    return (
+        2.0 * math.pi / 365.0 *
+        (day_of_year - 1 + (hour - 12.0) / 24.0)
+    )
+
+
+def equation_of_time_minutes(gamma):
+    """NOAA approximation of equation of time in minutes."""
+    return 229.18 * (
+        0.000075 +
+        0.001868 * math.cos(gamma) -
+        0.032077 * math.sin(gamma) -
+        0.014615 * math.cos(2.0 * gamma) -
+        0.040849 * math.sin(2.0 * gamma)
+    )
+
+
+def solar_declination_radians(gamma):
+    """NOAA approximation of solar declination in radians."""
+    return (
+        0.006918 -
+        0.399912 * math.cos(gamma) +
+        0.070257 * math.sin(gamma) -
+        0.006758 * math.cos(2.0 * gamma) +
+        0.000907 * math.sin(2.0 * gamma) -
+        0.002697 * math.cos(3.0 * gamma) +
+        0.001480 * math.sin(3.0 * gamma)
+    )
+
+
+def calculate_solar_position(
+    local_datetime,
+    latitude_degrees,
+    longitude_degrees,
+    timezone_hours
+):
+    """Return solar altitude and clockwise-from-north azimuth in radians."""
+    latitude = math.radians(float(latitude_degrees))
+    longitude = float(longitude_degrees)
+    timezone = float(timezone_hours)
+    gamma = fractional_year_radians(local_datetime)
+    equation_of_time = equation_of_time_minutes(gamma)
+    declination = solar_declination_radians(gamma)
+    local_minutes = (
+        local_datetime.hour * 60.0 +
+        local_datetime.minute +
+        local_datetime.second / 60.0
+    )
+    time_offset = equation_of_time + 4.0 * longitude - 60.0 * timezone
+    true_solar_time = (local_minutes + time_offset) % 1440.0
+    hour_angle_degrees = true_solar_time / 4.0 - 180.0
+
+    if hour_angle_degrees < -180.0:
+        hour_angle_degrees += 360.0
+
+    hour_angle = math.radians(hour_angle_degrees)
+    cosine_zenith = (
+        math.sin(latitude) * math.sin(declination) +
+        math.cos(latitude) *
+        math.cos(declination) *
+        math.cos(hour_angle)
+    )
+    cosine_zenith = clamp(cosine_zenith, -1.0, 1.0)
+    altitude = math.pi / 2.0 - math.acos(cosine_zenith)
+    azimuth_from_south = math.atan2(
+        math.sin(hour_angle),
+        (
+            math.cos(hour_angle) * math.sin(latitude) -
+            math.tan(declination) * math.cos(latitude)
+        )
+    )
+    azimuth_from_north = (
+        azimuth_from_south + math.pi
+    ) % (2.0 * math.pi)
+    return altitude, azimuth_from_north
+
+
+def solar_position_to_vector(
+    altitude,
+    azimuth,
+    north_vector,
+    east_vector
+):
+    """Convert altitude and azimuth to a normalized Rhino world vector."""
+    horizontal = math.cos(altitude)
+    vector = (
+        north_vector * (horizontal * math.cos(azimuth)) +
+        east_vector * (horizontal * math.sin(azimuth)) +
+        rg.Vector3d.ZAxis * math.sin(altitude)
+    )
+
+    if not vector.Unitize():
+        return None
+
+    return vector
+
+
+def calculate_sun_samples(
+    time_intervals,
+    latitude,
+    longitude,
+    timezone,
+    north_vector,
+    east_vector
+):
+    """Return above-horizon solar samples."""
+    samples = []
+    below_horizon_count = 0
+
+    for interval_index, interval in enumerate(time_intervals):
+        altitude, azimuth = calculate_solar_position(
+            interval["datetime"],
+            latitude,
+            longitude,
+            timezone
+        )
+
+        if altitude <= 0.0:
+            below_horizon_count += 1
+            continue
+
+        vector = solar_position_to_vector(
+            altitude,
+            azimuth,
+            north_vector,
+            east_vector
+        )
+
+        if vector is None:
+            continue
+
+        samples.append(
+            {
+                "sample_index": interval_index,
+                "start": interval["start"],
+                "end": interval["end"],
+                "datetime": interval["datetime"],
+                "duration_hours": interval["duration_hours"],
+                "altitude": altitude,
+                "azimuth": azimuth,
+                "vector": vector
+            }
+        )
+
+    return samples, below_horizon_count
+
+
+# =============================================================================
+# RAY-VOXEL MAPPING
+# =============================================================================
+
+def analysis_model_scale(points, voxel_records, context_mesh):
+    """Estimate a model scale for the ray-origin offset."""
+    boxes = []
+
+    for record in voxel_records:
+        boxes.append(record["bbox"])
+
+    if context_mesh is not None:
+        boxes.append(context_mesh.GetBoundingBox(True))
+
+    if not points and not boxes:
+        return 1.0
+
+    combined = rg.BoundingBox.Empty
+
+    for point in points:
+        combined.Union(point)
+
+    for box in boxes:
+        if box.IsValid:
+            combined.Union(box)
+
+    if not combined.IsValid:
+        return 1.0
+
+    return max(combined.Min.DistanceTo(combined.Max), 1.0)
+
+
+def mesh_ray_distance(point, vector, mesh, origin_offset):
+    """Return MeshRay distance, or -1 when unobstructed."""
+    origin = point + vector * origin_offset
+    ray = rg.Ray3d(origin, vector)
+    return rg.Intersect.Intersection.MeshRay(mesh, ray)
+
+
+def build_event_voxel_paths(
+    protected_points,
+    sun_samples,
+    context_mesh,
+    voxel_records,
+    origin_offset
+):
+    """
+    Map every Context-clear point/time ray to every intersected voxel.
+
+    Returns baseline flags, sorted voxel-index paths, counts, and cancellation.
+    """
+    baseline_flags_by_point = []
+    paths_by_point = []
+    context_errors = 0
+    voxel_errors = 0
+    ray_test_count = 0
+    cancelled = False
+
+    for point in protected_points:
+        if cancelled:
+            break
+
+        point_baseline_flags = []
+        point_paths = []
+
+        for sample in sun_samples:
+            context_blocked = False
+
+            if context_mesh is not None:
+                try:
+                    distance = mesh_ray_distance(
+                        point,
+                        sample["vector"],
+                        context_mesh,
+                        origin_offset
+                    )
+                    context_blocked = distance >= 0.0
+                except Exception:
+                    context_errors += 1
+                    context_blocked = True
+
+                ray_test_count += 1
+
+            if context_blocked:
+                point_baseline_flags.append(False)
+                point_paths.append([])
+                continue
+
+            point_baseline_flags.append(True)
+            hits = []
+
+            for record in voxel_records:
+                try:
+                    distance = mesh_ray_distance(
+                        point,
+                        sample["vector"],
+                        record["mesh"],
+                        origin_offset
+                    )
+                except Exception:
+                    voxel_errors += 1
+                    distance = 0.0
+
+                ray_test_count += 1
+
+                if distance >= 0.0:
+                    hits.append((distance, record["index"]))
+
+                if (
+                    ray_test_count % ESCAPE_CHECK_INTERVAL == 0 and
+                    check_escape_key()
+                ):
+                    cancelled = True
+                    break
+
+            hits.sort(key=lambda item: item[0])
+            point_paths.append([item[1] for item in hits])
+
+            if cancelled:
+                break
+
+        if cancelled:
+            break
+
+        baseline_flags_by_point.append(point_baseline_flags)
+        paths_by_point.append(point_paths)
+
+    return {
+        "baseline_flags": baseline_flags_by_point,
+        "paths": paths_by_point,
+        "context_errors": context_errors,
+        "voxel_errors": voxel_errors,
+        "ray_test_count": ray_test_count,
+        "cancelled": cancelled
+    }
+
+
+def build_event_path_tree(paths_by_point, voxel_records):
+    """Build branch {point;sample} containing all intersected VoxelIDs."""
+    tree = DataTree[object]()
+
+    for point_index, point_paths in enumerate(paths_by_point):
+        for sample_index, path in enumerate(point_paths):
+            if not path:
+                continue
+
+            gh_path = GH_Path(point_index, sample_index)
+
+            for voxel_index in path:
+                tree.Add(int(voxel_records[voxel_index]["id"]), gh_path)
+
+    return tree
+
+
+def calculate_voxel_impact_hours(
+    paths_by_point,
+    sun_samples,
+    voxel_count
+):
+    """Count initial context-clear ray duration passing through each voxel."""
+    scores = [0.0] * voxel_count
+
+    for point_paths in paths_by_point:
+        for sample_index, path in enumerate(point_paths):
+            duration = float(sun_samples[sample_index]["duration_hours"])
+
+            for voxel_index in set(path):
+                scores[voxel_index] += duration
+
+    return [round(score, 10) for score in scores]
+
+
+# =============================================================================
+# QUALIFIED SUN AND OPTIMIZATION
+# =============================================================================
+
+def calculate_qualified_accumulated_hours(
+    direct_sun_flags,
+    sun_samples,
+    minimum_continuous_minutes
+):
+    """Sum only complete direct-sun runs that reach the minimum duration."""
+    if len(direct_sun_flags) != len(sun_samples):
+        raise ValueError(
+            "Direct-sun flags and sun samples must have matching lengths."
+        )
+
+    minimum_hours = float(minimum_continuous_minutes) / 60.0
+    raw_hours = 0.0
+    previous_sample_end = None
+    run_durations = []
+
+    # IronPython 2.7 has no nonlocal. Single-element lists carry the two
+    # accumulators the closure has to rebind.
+    qualified_hours = [0.0]
+    current_run_hours = [0.0]
+
+    def close_run():
+        if current_run_hours[0] <= 0.0:
+            return
+
+        duration = round(current_run_hours[0], 10)
+        run_durations.append(duration)
+
+        if duration + EPSILON >= minimum_hours:
+            qualified_hours[0] += duration
+
+        current_run_hours[0] = 0.0
+
+    for sample_index, sample in enumerate(sun_samples):
+        if (
+            previous_sample_end is not None and
+            sample["start"] > previous_sample_end
+        ):
+            close_run()
+
+        if direct_sun_flags[sample_index]:
+            duration = float(sample["duration_hours"])
+            raw_hours += duration
+            current_run_hours[0] += duration
+        else:
+            close_run()
+
+        previous_sample_end = sample["end"]
+
+    close_run()
+    return (
+        round(qualified_hours[0], 10),
+        round(raw_hours, 10),
+        run_durations
+    )
+
+
+def evaluate_kept_state(
+    keep_mask,
+    baseline_flags_by_point,
+    paths_by_point,
+    sun_samples,
+    minimum_continuous_minutes
+):
+    """Evaluate qualified and raw sun hours for one voxel keep state."""
+    qualified_hours = []
+    raw_hours = []
+    direct_flags_by_point = []
+
+    for baseline_flags, point_paths in zip(
+        baseline_flags_by_point,
+        paths_by_point
+    ):
+        direct_flags = []
+
+        for baseline_clear, path in zip(baseline_flags, point_paths):
+            design_blocked = any(
+                keep_mask[voxel_index] for voxel_index in path
+            )
+            direct_flags.append(
+                bool(baseline_clear and not design_blocked)
+            )
+
+        qualified, raw, _ = calculate_qualified_accumulated_hours(
+            direct_flags,
+            sun_samples,
+            minimum_continuous_minutes
+        )
+        qualified_hours.append(qualified)
+        raw_hours.append(raw)
+        direct_flags_by_point.append(direct_flags)
+
+    return qualified_hours, raw_hours, direct_flags_by_point
+
+
+def calculate_baseline_hours(
+    baseline_flags_by_point,
+    sun_samples,
+    minimum_continuous_minutes
+):
+    """Calculate Context-only qualified and raw sun hours."""
+    qualified_values = []
+    raw_values = []
+
+    for flags in baseline_flags_by_point:
+        qualified, raw, _ = calculate_qualified_accumulated_hours(
+            flags,
+            sun_samples,
+            minimum_continuous_minutes
+        )
+        qualified_values.append(qualified)
+        raw_values.append(raw)
+
+    return qualified_values, raw_values
+
+
+def column_top_closure(
+    path,
+    keep_mask,
+    voxel_records,
+    column_members
+):
+    """
+    Return kept voxels that must be removed to clear one ray path.
+
+    For each intersected column, every kept voxel at or above the lowest
+    intersected kept layer is included.
+    """
+    # A plain dict is safe here: this function returns a set, so its contents
+    # do not depend on the traversal order below.
+    lowest_layer_by_column = {}
+
+    for voxel_index in path:
+        if not keep_mask[voxel_index]:
+            continue
+
+        record = voxel_records[voxel_index]
+        column_id = record["column_id"]
+        layer_id = record["layer_id"]
+
+        if (
+            column_id not in lowest_layer_by_column or
+            layer_id < lowest_layer_by_column[column_id]
+        ):
+            lowest_layer_by_column[column_id] = layer_id
+
+    removal = set()
+
+    for column_id, minimum_layer in lowest_layer_by_column.items():
+        for voxel_index in column_members[column_id]:
+            if (
+                keep_mask[voxel_index] and
+                voxel_records[voxel_index]["layer_id"] >= minimum_layer
+            ):
+                removal.add(voxel_index)
+
+    return removal
+
+
+def minimum_qualifying_windows(
+    baseline_flags,
+    sun_samples,
+    minimum_continuous_minutes
+):
+    """
+    Return smallest Context-clear consecutive index windows reaching threshold.
+    """
+    minimum_hours = float(minimum_continuous_minutes) / 60.0
+    windows = []
+
+    for start_index in range(len(sun_samples)):
+        if not baseline_flags[start_index]:
+            continue
+
+        duration = 0.0
+        previous_end = None
+
+        for end_index in range(start_index, len(sun_samples)):
+            sample = sun_samples[end_index]
+
+            if not baseline_flags[end_index]:
+                break
+
+            if (
+                previous_end is not None and
+                sample["start"] > previous_end
+            ):
+                break
+
+            duration += float(sample["duration_hours"])
+            previous_end = sample["end"]
+
+            if minimum_hours <= EPSILON or duration + EPSILON >= minimum_hours:
+                windows.append(
+                    tuple(range(start_index, end_index + 1))
+                )
+                break
+
+    return windows
+
+
+def build_candidate_actions(
+    keep_mask,
+    current_hours,
+    required_hours,
+    solvable_mask,
+    baseline_flags_by_point,
+    paths_by_point,
+    sun_samples,
+    minimum_continuous_minutes,
+    voxel_records,
+    column_members
+):
+    """Return unique top-down removal actions for currently deficient points."""
+    # This one changes results, not just reporting. choose_best_action keeps
+    # the first candidate on a comparison-key tie, so the traversal order of
+    # this dictionary decides which voxels a tie removes. OrderedDict
+    # reproduces the Rhino 8 insertion order exactly.
+    action_sources = OrderedDict()
+
+    for point_index, current_value in enumerate(current_hours):
+        if not solvable_mask[point_index]:
+            continue
+
+        if current_value + EPSILON >= required_hours:
+            continue
+
+        windows = minimum_qualifying_windows(
+            baseline_flags_by_point[point_index],
+            sun_samples,
+            minimum_continuous_minutes
+        )
+
+        for window in windows:
+            action = set()
+
+            for sample_index in window:
+                action.update(
+                    column_top_closure(
+                        paths_by_point[point_index][sample_index],
+                        keep_mask,
+                        voxel_records,
+                        column_members
+                    )
+                )
+
+            if not action:
+                continue
+
+            key = frozenset(action)
+            action_sources.setdefault(key, []).append(
+                (point_index, window)
+            )
+
+    return action_sources
+
+
+def total_solvable_deficit(hours, solvable_mask, required_hours):
+    """Return total qualified-hour deficit across baseline-solvable points."""
+    return sum(
+        max(0.0, required_hours - value)
+        for value, solvable in zip(hours, solvable_mask)
+        if solvable
+    )
+
+
+def choose_best_action(
+    candidate_actions,
+    keep_mask,
+    before_hours,
+    required_hours,
+    solvable_mask,
+    voxel_records,
+    baseline_flags_by_point,
+    paths_by_point,
+    sun_samples,
+    minimum_continuous_minutes
+):
+    """Simulate candidates and return the best positive-deficit-reduction action."""
+    before_deficit = total_solvable_deficit(
+        before_hours,
+        solvable_mask,
+        required_hours
+    )
+    best = None
+
+    for action, sources in candidate_actions.items():
+        cost = sum(voxel_records[index]["volume"] for index in action)
+
+        if cost <= EPSILON:
+            continue
+
+        trial_keep = list(keep_mask)
+
+        for voxel_index in action:
+            trial_keep[voxel_index] = False
+
+        trial_hours, _, _ = evaluate_kept_state(
+            trial_keep,
+            baseline_flags_by_point,
+            paths_by_point,
+            sun_samples,
+            minimum_continuous_minutes
+        )
+        after_deficit = total_solvable_deficit(
+            trial_hours,
+            solvable_mask,
+            required_hours
+        )
+        gain = before_deficit - after_deficit
+
+        if gain <= EPSILON:
+            continue
+
+        efficiency = gain / cost
+        comparison_key = (efficiency, gain, -cost, -len(action))
+
+        if best is None or comparison_key > best["comparison_key"]:
+            best = {
+                "action": set(action),
+                "sources": sources,
+                "cost": cost,
+                "gain": gain,
+                "trial_hours": trial_hours,
+                "comparison_key": comparison_key
+            }
+
+    return best
+
+
+def optimize_voxels(
+    voxel_records,
+    column_members,
+    baseline_flags_by_point,
+    paths_by_point,
+    sun_samples,
+    minimum_continuous_minutes,
+    required_hours,
+    max_iterations
+):
+    """Run deterministic greedy top-down voxel removal."""
+    voxel_count = len(voxel_records)
+    keep_mask = [True] * voxel_count
+    baseline_hours, raw_baseline_hours = calculate_baseline_hours(
+        baseline_flags_by_point,
+        sun_samples,
+        minimum_continuous_minutes
+    )
+    solvable_mask = [
+        value + EPSILON >= required_hours
+        for value in baseline_hours
+    ]
+    initial_hours, initial_raw_hours, _ = evaluate_kept_state(
+        keep_mask,
+        baseline_flags_by_point,
+        paths_by_point,
+        sun_samples,
+        minimum_continuous_minutes
+    )
+    current_hours = list(initial_hours)
+    iteration_data = []
+    stop_reason = None
+    cancelled = False
+
+    for iteration_index in range(max_iterations):
+        deficient = [
+            index
+            for index, value in enumerate(current_hours)
+            if solvable_mask[index] and value + EPSILON < required_hours
+        ]
+
+        if not deficient:
+            stop_reason = "All baseline-solvable points meet the requirement."
+            break
+
+        candidates = build_candidate_actions(
+            keep_mask,
+            current_hours,
+            required_hours,
+            solvable_mask,
+            baseline_flags_by_point,
+            paths_by_point,
+            sun_samples,
+            minimum_continuous_minutes,
+            voxel_records,
+            column_members
+        )
+        best = choose_best_action(
+            candidates,
+            keep_mask,
+            current_hours,
+            required_hours,
+            solvable_mask,
+            voxel_records,
+            baseline_flags_by_point,
+            paths_by_point,
+            sun_samples,
+            minimum_continuous_minutes
+        )
+
+        if best is None:
+            stop_reason = (
+                "No positive-gain top-down removal action remains."
+            )
+            break
+
+        before_hours = list(current_hours)
+
+        for voxel_index in best["action"]:
+            keep_mask[voxel_index] = False
+
+        current_hours = list(best["trial_hours"])
+        iteration_data.append(
+            {
+                "Schema": "SolarVoxelIteration.v1",
+                "Iteration": iteration_index + 1,
+                "RemovedVoxelIDs": [
+                    voxel_records[index]["id"]
+                    for index in sorted(best["action"])
+                ],
+                "RemovedVolume": float(best["cost"]),
+                "QualifiedDeficitReductionHours": float(best["gain"]),
+                "SunHoursBefore": before_hours,
+                "SunHoursAfter": list(current_hours),
+                "CandidateSourceCount": len(best["sources"])
+            }
+        )
+
+        if check_escape_key():
+            cancelled = True
+            stop_reason = "Optimization cancelled with Escape."
+            break
+    else:
+        stop_reason = "MaxIterations reached."
+
+    final_hours, final_raw_hours, final_direct_flags = evaluate_kept_state(
+        keep_mask,
+        baseline_flags_by_point,
+        paths_by_point,
+        sun_samples,
+        minimum_continuous_minutes
+    )
+
+    return {
+        "keep_mask": keep_mask,
+        "baseline_hours": baseline_hours,
+        "raw_baseline_hours": raw_baseline_hours,
+        "initial_hours": initial_hours,
+        "initial_raw_hours": initial_raw_hours,
+        "final_hours": final_hours,
+        "final_raw_hours": final_raw_hours,
+        "final_direct_flags": final_direct_flags,
+        "solvable_mask": solvable_mask,
+        "iteration_data": iteration_data,
+        "stop_reason": stop_reason,
+        "cancelled": cancelled
+    }
+
+
+# =============================================================================
+# REPORTING
+# =============================================================================
+
+def build_report(
+    status,
+    elapsed_seconds,
+    protected_points,
+    voxel_records,
+    context_source_count,
+    sun_samples,
+    below_horizon_count,
+    required_hours,
+    minimum_continuous_minutes,
+    max_iterations,
+    mapping_result,
+    optimization_result,
+    warnings
+):
+    """Build a complete Panel-friendly optimization report."""
+    keep_mask = optimization_result["keep_mask"]
+    kept_count = sum(1 for value in keep_mask if value)
+    removed_count = len(keep_mask) - kept_count
+    initial_volume = sum(record["volume"] for record in voxel_records)
+    kept_volume = sum(
+        record["volume"]
+        for record in voxel_records
+        if keep_mask[record["index"]]
+    )
+    removed_volume = initial_volume - kept_volume
+    report = [
+        "Status: {0}".format(status),
+        "Component: Solar Voxel Optimizer MVP",
+        "Runtime: Rhino 7 GhPython IronPython 2.7",
+        "Calculation Time: {0} seconds".format(
+            format_number(elapsed_seconds, 3)
+        ),
+        "Optimization Method: Greedy Top-Down Column Removal",
+        "Global Optimality: Not guaranteed",
+        "--- Inputs ---",
+        "Protected Points: {0}".format(len(protected_points)),
+        "Input Voxels: {0}".format(len(voxel_records)),
+        "Context Source Mesh Parts: {0}".format(context_source_count),
+        "Sun-Above-Horizon Intervals: {0}".format(len(sun_samples)),
+        "Below-Horizon Intervals: {0}".format(below_horizon_count),
+        "Minimum Continuous Segment: {0} minutes".format(
+            format_number(minimum_continuous_minutes, 3)
+        ),
+        "Required Sun Hours: {0}".format(
+            format_number(required_hours, 4)
+        ),
+        "Max Iterations: {0}".format(max_iterations),
+        "Model Units: {0}".format(active_document_units()),
+        "--- Mapping ---",
+        "MeshRay Calls: {0}".format(
+            mapping_result["ray_test_count"]
+        ),
+        "Context MeshRay Errors: {0}".format(
+            mapping_result["context_errors"]
+        ),
+        "Voxel MeshRay Errors: {0}".format(
+            mapping_result["voxel_errors"]
+        ),
+        "Mapped Design-Blocking Events: {0}".format(
+            sum(
+                1
+                for point_paths in mapping_result["paths"]
+                for path in point_paths
+                if path
+            )
+        ),
+        "--- Optimization ---",
+        "Iterations Performed: {0}".format(
+            len(optimization_result["iteration_data"])
+        ),
+        "Stop Reason: {0}".format(
+            optimization_result["stop_reason"]
+        ),
+        "Kept Voxels: {0}".format(kept_count),
+        "Removed Voxels: {0}".format(removed_count),
+        "Initial Voxel Volume: {0}".format(
+            format_number(initial_volume, 3)
+        ),
+        "Kept Voxel Volume: {0}".format(
+            format_number(kept_volume, 3)
+        ),
+        "Removed Voxel Volume: {0}".format(
+            format_number(removed_volume, 3)
+        ),
+        "Retained Volume Ratio: {0}%".format(
+            format_number(
+                100.0 * kept_volume / initial_volume
+                if initial_volume > EPSILON else 0.0,
+                2
+            )
+        ),
+        "--- Protected Point Results ---"
+    ]
+
+    for point_index in range(len(protected_points)):
+        baseline = optimization_result["baseline_hours"][point_index]
+        initial = optimization_result["initial_hours"][point_index]
+        final = optimization_result["final_hours"][point_index]
+        solvable = optimization_result["solvable_mask"][point_index]
+
+        if not solvable:
+            point_status = "Baseline below requirement; not repairable"
+        elif final + EPSILON >= required_hours:
+            point_status = "Meets requirement"
+        else:
+            point_status = "Still below requirement"
+
+        report.append(
+            (
+                "Point {0}: Baseline={1}h, Initial={2}h, Final={3}h, "
+                "{4}"
+            ).format(
+                point_index,
+                format_number(baseline, 4),
+                format_number(initial, 4),
+                format_number(final, 4),
+                point_status
+            )
+        )
+
+    report.extend(
+        [
+            "--- Output Contract ---",
+            "KeepMask[i] corresponds to Voxels[i].",
+            "KeptVoxels and RemovedVoxels preserve original item order.",
+            (
+                "OptimizedColumns contains one combined exact Mesh per "
+                "remaining XY column and does not fill input-geometry gaps."
+            ),
+            (
+                "EventVoxelPaths branch {point;sample} contains every "
+                "intersected VoxelID in ray order."
+            ),
+            (
+                "Feed KeptVoxels or OptimizedColumns to the existing Solar "
+                "Constraint Solver for independent final verification."
+            )
+        ]
+    )
+
+    if warnings:
+        report.append("--- Warnings ---")
+
+        for warning in warnings:
+            report.append("Warning: {0}".format(warning))
+
+    return report
+
+
+def error_report(errors, warnings=None):
+    """Build a Panel-friendly input error report."""
+    report = ["Status: Input Error"]
+
+    for error in errors:
+        report.append("Error: {0}".format(error))
+
+    if warnings:
+        for warning in warnings:
+            report.append("Warning: {0}".format(warning))
+
+    return report
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def execute(
+    ProtectedPoints,
+    Voxels,
+    VoxelIDs,
+    ColumnIDs,
+    LayerIDs,
+    ContextBuildings,
+    North,
+    Latitude,
+    Longitude,
+    TimeZone,
+    Year,
+    Month,
+    Day,
+    StartHour,
+    EndHour,
+    TimeStep,
+    MinimumContinuousMinutes,
+    RequiredSunHours,
+    MaxIterations,
+    Run
+):
+    """Run mapping, optimization, and output construction."""
+    empty_tree = DataTree[object]()
+
+    if not bool(unwrap_gh_value(Run)):
+        return (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            empty_tree,
+            [],
+            [
+                "Status: Waiting",
+                "Set Run to True to optimize column voxels."
+            ]
+        )
+
+    calculation_start = time.time()
+    errors = []
+    warnings = []
+    (
+        analysis_errors,
+        analysis_warnings,
+        protected_points,
+        max_iterations
+    ) = validate_analysis_inputs(
+        ProtectedPoints,
+        Latitude,
+        Longitude,
+        TimeZone,
+        Year,
+        Month,
+        Day,
+        StartHour,
+        EndHour,
+        TimeStep,
+        MinimumContinuousMinutes,
+        RequiredSunHours,
+        MaxIterations
+    )
+    errors.extend(analysis_errors)
+    warnings.extend(analysis_warnings)
+    north_errors, north_vector, east_vector = (
+        validate_and_normalize_north(North)
+    )
+    errors.extend(north_errors)
+    (
+        voxel_records,
+        column_members,
+        voxel_errors,
+        voxel_warnings
+    ) = prepare_voxels(Voxels, VoxelIDs, ColumnIDs, LayerIDs)
+    errors.extend(voxel_errors)
+    warnings.extend(voxel_warnings)
+    (
+        context_mesh,
+        context_errors,
+        context_warnings,
+        context_source_count
+    ) = build_context_mesh(ContextBuildings)
+    errors.extend(context_errors)
+    warnings.extend(context_warnings)
+
+    if errors:
+        return (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            empty_tree,
+            [],
+            error_report(errors, warnings)
+        )
+
+    latitude = float(unwrap_gh_value(Latitude))
+    longitude = float(unwrap_gh_value(Longitude))
+    timezone = float(unwrap_gh_value(TimeZone))
+    year = int(unwrap_gh_value(Year))
+    month = int(unwrap_gh_value(Month))
+    day = int(unwrap_gh_value(Day))
+    start_hour = float(unwrap_gh_value(StartHour))
+    end_hour = float(unwrap_gh_value(EndHour))
+    time_step = float(unwrap_gh_value(TimeStep))
+    minimum_continuous_minutes = float(
+        unwrap_gh_value(MinimumContinuousMinutes)
+    )
+    required_hours = float(unwrap_gh_value(RequiredSunHours))
+    intervals = generate_time_intervals(
+        year,
+        month,
+        day,
+        start_hour,
+        end_hour,
+        time_step
+    )
+    sun_samples, below_horizon_count = calculate_sun_samples(
+        intervals,
+        latitude,
+        longitude,
+        timezone,
+        north_vector,
+        east_vector
+    )
+
+    estimated_tests = (
+        len(protected_points) *
+        len(sun_samples) *
+        (
+            len(voxel_records) +
+            (1 if context_mesh is not None else 0)
+        )
+    )
+
+    if estimated_tests > MAX_RAY_VOXEL_TESTS:
+        return (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            empty_tree,
+            [],
+            error_report(
+                [
+                    "Estimated MeshRay calls {0} exceed the safety limit "
+                    "{1}. Increase voxel size, enlarge TimeStep, or reduce "
+                    "ProtectedPoints.".format(
+                        estimated_tests,
+                        MAX_RAY_VOXEL_TESTS
+                    )
+                ],
+                warnings
+            )
+        )
+
+    tolerance = active_document_tolerance()
+    model_scale = analysis_model_scale(
+        protected_points,
+        voxel_records,
+        context_mesh
+    )
+    origin_offset = max(
+        tolerance * 10.0,
+        model_scale * RAY_ORIGIN_OFFSET_FACTOR
+    )
+    mapping_result = build_event_voxel_paths(
+        protected_points,
+        sun_samples,
+        context_mesh,
+        voxel_records,
+        origin_offset
+    )
+
+    if mapping_result["cancelled"]:
+        warnings.append(
+            "Ray mapping was cancelled with Escape; partial data was "
+            "discarded."
+        )
+        return (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            empty_tree,
+            [],
+            [
+                "Status: Cancelled",
+                "Ray mapping was cancelled. Run again for complete output."
+            ] + ["Warning: {0}".format(item) for item in warnings]
+        )
+
+    if mapping_result["context_errors"] > 0:
+        warnings.append(
+            "{0} Context MeshRay calls failed and were treated as blocked."
+            .format(mapping_result["context_errors"])
+        )
+
+    if mapping_result["voxel_errors"] > 0:
+        warnings.append(
+            "{0} voxel MeshRay calls failed and were treated as blocked."
+            .format(mapping_result["voxel_errors"])
+        )
+
+    optimization_result = optimize_voxels(
+        voxel_records,
+        column_members,
+        mapping_result["baseline_flags"],
+        mapping_result["paths"],
+        sun_samples,
+        minimum_continuous_minutes,
+        required_hours,
+        max_iterations
+    )
+    keep_mask = optimization_result["keep_mask"]
+    kept_voxels = [
+        record["geometry"]
+        for record in voxel_records
+        if keep_mask[record["index"]]
+    ]
+    removed_voxels = [
+        record["geometry"]
+        for record in voxel_records
+        if not keep_mask[record["index"]]
+    ]
+    optimized_columns = create_optimized_columns(
+        voxel_records,
+        column_members,
+        keep_mask
+    )
+    impact_hours = calculate_voxel_impact_hours(
+        mapping_result["paths"],
+        sun_samples,
+        len(voxel_records)
+    )
+    event_tree = build_event_path_tree(
+        mapping_result["paths"],
+        voxel_records
+    )
+    status = (
+        "Cancelled"
+        if optimization_result["cancelled"]
+        else "Completed"
+    )
+    report = build_report(
+        status,
+        time.time() - calculation_start,
+        protected_points,
+        voxel_records,
+        context_source_count,
+        sun_samples,
+        below_horizon_count,
+        required_hours,
+        minimum_continuous_minutes,
+        max_iterations,
+        mapping_result,
+        optimization_result,
+        warnings
+    )
+
+    return (
+        kept_voxels,
+        removed_voxels,
+        optimized_columns,
+        keep_mask,
+        optimization_result["initial_hours"],
+        optimization_result["final_hours"],
+        impact_hours,
+        event_tree,
+        optimization_result["iteration_data"],
+        report
+    )
+
+
+# =============================================================================
+# GHPYTHON ENTRY POINT
+# =============================================================================
+#
+# Rhino 7 GhPython has no RunScript signature. The 20 component inputs arrive
+# as module-level names and the 10 component outputs are read back from
+# module-level names, so the workflow is called once here at import time.
+
+try:
+    (
+        KeptVoxels,
+        RemovedVoxels,
+        OptimizedColumns,
+        KeepMask,
+        InitialSunHours,
+        FinalSunHours,
+        VoxelImpactHours,
+        EventVoxelPaths,
+        IterationData,
+        Report
+    ) = execute(
+        ProtectedPoints,
+        Voxels,
+        VoxelIDs,
+        ColumnIDs,
+        LayerIDs,
+        ContextBuildings,
+        North,
+        Latitude,
+        Longitude,
+        TimeZone,
+        Year,
+        Month,
+        Day,
+        StartHour,
+        EndHour,
+        TimeStep,
+        MinimumContinuousMinutes,
+        RequiredSunHours,
+        MaxIterations,
+        Run
+    )
+
+except Exception as exception:
+    KeptVoxels = []
+    RemovedVoxels = []
+    OptimizedColumns = []
+    KeepMask = []
+    InitialSunHours = []
+    FinalSunHours = []
+    VoxelImpactHours = []
+    EventVoxelPaths = DataTree[object]()
+    IterationData = []
+
+    Report = [
+        "Status: Runtime Error",
+        "Error Type: {0}".format(
+            type(exception).__name__
+        ),
+        "Error Message: {0}".format(
+            str(exception)
+        ),
+        "Check the component inputs and Rhino geometry validity."
+    ]

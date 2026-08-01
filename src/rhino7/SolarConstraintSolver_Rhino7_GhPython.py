@@ -1,0 +1,1940 @@
+"""
+Project source: src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py
+
+Solar Constraint Solver MVP
+Rhino 7 Grasshopper GhPython Script Component
+IronPython 2.7
+
+Purpose
+-------
+Evaluate direct-sun duration at user-supplied protected points while keeping
+existing context buildings and the proposed design volume as separate
+obstruction roles.
+
+For every protected point the solver calculates:
+
+    BaselineHours = qualified accumulated direct sun with Context only
+    SunHours      = qualified accumulated direct sun with Context + Design
+    LostHours     = BaselineHours - SunHours
+
+Only continuous direct-sun segments whose duration reaches
+MinimumContinuousMinutes contribute to the qualified accumulated values.
+Raw accumulated values are retained in the result records for auditing.
+
+An affected point is one whose LostHours is greater than ImpactTolerance.
+A violation is one whose SunHours is lower than RequiredSunHours. No regulation
+value is hard-coded.
+
+Paste workflow
+--------------
+1. Add a Rhino 7 GhPython Script component.
+2. Create and rename all 17 inputs and all 4 outputs by hand. Rhino 7 has no
+   SDK-Mode, so no signature synchronizes the ports for you.
+3. Set the Access and Type Hint of every input as listed below.
+4. Replace the complete editor contents with this file.
+5. Set Run to False, connect the inputs, then switch Run to True.
+
+Names are case-sensitive and must match this code exactly.
+
+GhPython input parameter access settings
+----------------------------------------
+ProtectedPoints    : List Access, Point3d
+DesignVolume       : List Access, GeometryBase
+ContextBuildings   : List Access, GeometryBase
+North              : Item Access, Vector3d
+Latitude           : Item Access, float
+Longitude          : Item Access, float
+TimeZone           : Item Access, float
+Year               : Item Access, int
+Month              : Item Access, int
+Day                : Item Access, int
+StartHour          : Item Access, float
+EndHour            : Item Access, float
+TimeStep           : Item Access, float, minutes
+MinimumContinuousMinutes : Item Access, float, minutes
+RequiredSunHours   : Item Access, float
+ImpactTolerance    : Item Access, float, hours
+Run                : Item Access, bool
+
+Output contract
+---------------
+SunHours : List[float]
+    One final direct-sun value per ProtectedPoints item, in the same order.
+
+ViolationData : List[dict]
+    One record for every affected or violating point. Records distinguish
+    existing-context violations from design-caused impact.
+
+ConstraintData : DataTree[object]
+    Branch {i} contains design-blocking events for ProtectedPoints[i]. Events
+    are only emitted when Context is clear and Design Volume blocks the sun.
+
+Report : List[str]
+    Status, inputs, mesh statistics, performance counts, warnings, and errors.
+
+Scope
+-----
+This MVP calculates accumulated direct sun from qualifying continuous segments
+for one date. It does not generate a forbidden volume, modify design geometry,
+perform Boolean operations, or claim regulatory-report compliance.
+
+Difference from the Rhino 8 version
+-----------------------------------
+SubD is deliberately ignored for stable Rhino 7 compatibility, matching
+SunlightEnvelope_Rhino7_GhPython.py. A SubD in ContextBuildings or
+DesignVolume is reported as a warning instead of being meshed. Convert SubD to
+Brep or Mesh in Rhino before connecting it. The sun-position algorithm, ray
+obstruction logic, qualified-continuous-segment rule and all output records
+are identical to the Rhino 8 version.
+"""
+
+import math
+import time
+from collections import OrderedDict
+from datetime import datetime, timedelta
+
+import Rhino
+import Rhino.Geometry as rg
+import scriptcontext as sc
+
+from Grasshopper import DataTree
+from Grasshopper.Kernel.Data import GH_Path
+
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+EPSILON = 1.0e-9
+RAY_ORIGIN_OFFSET_FACTOR = 1.0e-7
+PROGRESS_CHECK_INTERVAL = 2000
+MAX_PROTECTED_POINTS = 100000
+MAX_ESTIMATED_RAY_TESTS = 20000000
+
+
+# =============================================================================
+# BASIC HELPERS
+# =============================================================================
+
+def unwrap_gh_value(value):
+    """
+    Unwrap common Grasshopper goo values received through component inputs.
+
+    Grasshopper can pass list items as GH_Point, GH_Brep, GH_Mesh, GH_Number,
+    or other GH_Goo wrappers instead of their RhinoCommon/Python values.
+    """
+    if value is None:
+        return None
+
+    try:
+        unwrapped = value.Value
+
+        if unwrapped is not None:
+            return unwrapped
+    except Exception:
+        pass
+
+    try:
+        script_variable = value.ScriptVariable()
+
+        if script_variable is not None:
+            return script_variable
+    except Exception:
+        pass
+
+    return value
+
+
+def is_finite_number(value):
+    """Return True when value can be converted to a finite float."""
+    try:
+        value = unwrap_gh_value(value)
+        number = float(value)
+        return not math.isnan(number) and not math.isinf(number)
+    except Exception:
+        return False
+
+
+def format_number(value, digits=3):
+    """Format a number for Grasshopper Panel output."""
+    try:
+        return ("{0:." + str(digits) + "f}").format(float(value))
+    except Exception:
+        return str(value)
+
+
+def clamp(value, minimum, maximum):
+    """Clamp a numeric value to an inclusive range."""
+    return max(minimum, min(maximum, value))
+
+
+def geometry_type_name(geometry):
+    """Return a readable Rhino or Python type name."""
+    if geometry is None:
+        return "None"
+
+    try:
+        return geometry.GetType().Name
+    except Exception:
+        return type(geometry).__name__
+
+
+def check_escape_key():
+    """Return True when Rhino reports that Escape was pressed."""
+    try:
+        return bool(sc.escape_test(False))
+    except Exception:
+        return False
+
+
+def timedelta_to_seconds(delta):
+    """
+    Return total seconds without relying on timedelta division.
+
+    This form is compatible with IronPython 2.7 and also preserves
+    microseconds.
+    """
+    return (
+        delta.days * 86400.0 +
+        delta.seconds +
+        delta.microseconds / 1000000.0
+    )
+
+
+def normalize_sequence(value):
+    """Normalize a Grasshopper List input or single fallback item."""
+    if value is None:
+        return []
+
+    if isinstance(value, basestring):
+        return [value]
+
+    if isinstance(value, (list, tuple)):
+        return list(value)
+
+    try:
+        return list(value)
+    except Exception:
+        return [value]
+
+
+def active_document_tolerance():
+    """Return a safe Rhino model tolerance when ActiveDoc is unavailable."""
+    document = Rhino.RhinoDoc.ActiveDoc
+
+    if document is None:
+        return 0.001
+
+    try:
+        return max(float(document.ModelAbsoluteTolerance), EPSILON)
+    except Exception:
+        return 0.001
+
+
+def active_document_units():
+    """Return the current model unit-system name for reporting."""
+    document = Rhino.RhinoDoc.ActiveDoc
+
+    if document is None:
+        return "Unknown (Rhino ActiveDoc is unavailable)"
+
+    try:
+        return str(document.ModelUnitSystem)
+    except Exception:
+        return "Unknown"
+
+
+# =============================================================================
+# INPUT VALIDATION
+# =============================================================================
+
+def validate_integer(value, name, errors):
+    """Validate and return an integer-valued numeric input."""
+    value = unwrap_gh_value(value)
+
+    if not is_finite_number(value):
+        errors.append("{0} must be a finite integer.".format(name))
+        return None
+
+    integer_value = int(value)
+
+    if abs(float(value) - integer_value) > EPSILON:
+        errors.append("{0} must be an integer.".format(name))
+        return None
+
+    return integer_value
+
+
+def validate_inputs(
+    protected_points,
+    latitude,
+    longitude,
+    timezone,
+    year,
+    month,
+    day,
+    start_hour,
+    end_hour,
+    time_step,
+    minimum_continuous_minutes,
+    required_sun_hours,
+    impact_tolerance
+):
+    """Validate non-mesh inputs and return normalized protected points."""
+    errors = []
+    warnings = []
+
+    point_values = normalize_sequence(protected_points)
+    normalized_points = []
+
+    if not point_values:
+        errors.append("ProtectedPoints is empty.")
+    elif len(point_values) > MAX_PROTECTED_POINTS:
+        errors.append(
+            "ProtectedPoints contains {0} items, exceeding the safety limit "
+            "of {1}.".format(len(point_values), MAX_PROTECTED_POINTS)
+        )
+
+    for index, value in enumerate(point_values):
+        value = unwrap_gh_value(value)
+
+        if value is None:
+            errors.append(
+                "ProtectedPoints item {0} is null.".format(index)
+            )
+            continue
+
+        try:
+            point = rg.Point3d(value)
+        except Exception:
+            errors.append(
+                "ProtectedPoints item {0} cannot be converted to Point3d. "
+                "Received: {1}.".format(index, geometry_type_name(value))
+            )
+            continue
+
+        if not point.IsValid:
+            errors.append(
+                "ProtectedPoints item {0} is invalid.".format(index)
+            )
+            continue
+
+        normalized_points.append(point)
+
+    # An IronPython 2.7 dictionary has no insertion order. OrderedDict keeps
+    # the Report error lines in the same order as Rhino 8, where a CPython 3
+    # dictionary preserves insertion order.
+    numeric_values = OrderedDict([
+        ("Latitude", latitude),
+        ("Longitude", longitude),
+        ("TimeZone", timezone),
+        ("StartHour", start_hour),
+        ("EndHour", end_hour),
+        ("TimeStep", time_step),
+        ("MinimumContinuousMinutes", minimum_continuous_minutes),
+        ("RequiredSunHours", required_sun_hours),
+        ("ImpactTolerance", impact_tolerance)
+    ])
+
+    for name, value in numeric_values.items():
+        if not is_finite_number(value):
+            errors.append("{0} must be a finite number.".format(name))
+
+    year_value = validate_integer(year, "Year", errors)
+    month_value = validate_integer(month, "Month", errors)
+    day_value = validate_integer(day, "Day", errors)
+
+    if year_value is not None:
+        if year_value < 1 or year_value > 9999:
+            errors.append("Year must be between 1 and 9999.")
+
+    if (
+        year_value is not None and
+        month_value is not None and
+        day_value is not None
+    ):
+        try:
+            datetime(year_value, month_value, day_value)
+        except Exception:
+            errors.append("Year, Month, and Day do not form a valid date.")
+
+    if all(is_finite_number(value) for value in numeric_values.values()):
+        latitude_value = float(unwrap_gh_value(latitude))
+        longitude_value = float(unwrap_gh_value(longitude))
+        timezone_value = float(unwrap_gh_value(timezone))
+        start_value = float(unwrap_gh_value(start_hour))
+        end_value = float(unwrap_gh_value(end_hour))
+        step_value = float(unwrap_gh_value(time_step))
+        minimum_continuous_value = float(
+            unwrap_gh_value(minimum_continuous_minutes)
+        )
+        required_value = float(unwrap_gh_value(required_sun_hours))
+        impact_value = float(unwrap_gh_value(impact_tolerance))
+
+        if latitude_value < -90.0 or latitude_value > 90.0:
+            errors.append("Latitude must be between -90 and 90 degrees.")
+
+        if longitude_value < -180.0 or longitude_value > 180.0:
+            errors.append("Longitude must be between -180 and 180 degrees.")
+
+        if timezone_value < -14.0 or timezone_value > 14.0:
+            errors.append("TimeZone must be between UTC-14 and UTC+14.")
+
+        if start_value < 0.0 or start_value > 24.0:
+            errors.append("StartHour must be between 0 and 24.")
+
+        if end_value < 0.0 or end_value > 24.0:
+            errors.append("EndHour must be between 0 and 24.")
+
+        if end_value <= start_value:
+            errors.append("EndHour must be greater than StartHour.")
+
+        if step_value <= 0.0:
+            errors.append("TimeStep must be greater than zero minutes.")
+        elif step_value > 240.0:
+            warnings.append(
+                "TimeStep is larger than 240 minutes; results may be coarse."
+            )
+
+        if minimum_continuous_value < 0.0:
+            errors.append(
+                "MinimumContinuousMinutes cannot be negative."
+            )
+        elif (
+            minimum_continuous_value > 0.0 and
+            step_value > minimum_continuous_value
+        ):
+            warnings.append(
+                "TimeStep is larger than MinimumContinuousMinutes. "
+                "The requested continuity threshold cannot be resolved "
+                "reliably; use TimeStep less than or equal to the threshold."
+            )
+
+        if required_value < 0.0:
+            errors.append("RequiredSunHours cannot be negative.")
+
+        if impact_value < 0.0:
+            errors.append("ImpactTolerance cannot be negative.")
+
+    return errors, warnings, normalized_points
+
+
+def validate_and_normalize_north(north):
+    """
+    Validate North and return normalized horizontal north and east vectors.
+
+    Azimuth is clockwise from North:
+        0 degrees North, 90 East, 180 South, 270 West.
+    """
+    errors = []
+    north = unwrap_gh_value(north)
+
+    if north is None:
+        errors.append("North vector is missing.")
+        return errors, None, None
+
+    try:
+        north_vector = rg.Vector3d(north)
+    except Exception:
+        errors.append("North must be convertible to Rhino Vector3d.")
+        return errors, None, None
+
+    north_vector.Z = 0.0
+
+    if north_vector.IsTiny(EPSILON):
+        errors.append(
+            "North vector must have a non-zero horizontal XY component."
+        )
+        return errors, None, None
+
+    if not north_vector.Unitize():
+        errors.append("North vector could not be normalized.")
+        return errors, None, None
+
+    east_vector = rg.Vector3d.CrossProduct(
+        north_vector,
+        rg.Vector3d.ZAxis
+    )
+
+    if east_vector.IsTiny(EPSILON) or not east_vector.Unitize():
+        errors.append("East vector could not be derived from North.")
+        return errors, None, None
+
+    return errors, north_vector, east_vector
+
+
+# =============================================================================
+# RHINO GEOMETRY TO ANALYSIS MESH
+# =============================================================================
+
+def mesh_from_brep(brep):
+    """Create valid analysis meshes from a Brep."""
+    meshes = []
+
+    if brep is None or not brep.IsValid:
+        return meshes
+
+    try:
+        created = rg.Mesh.CreateFromBrep(
+            brep,
+            rg.MeshingParameters.FastRenderMesh
+        )
+
+        if created:
+            for mesh in created:
+                if mesh is not None and mesh.IsValid:
+                    meshes.append(mesh)
+    except Exception:
+        pass
+
+    return meshes
+
+
+def convert_geometry_to_meshes(geometry):
+    """Convert Mesh, Brep, Extrusion, or Surface to analysis meshes."""
+    meshes = []
+
+    if geometry is None:
+        return meshes
+
+    if isinstance(geometry, rg.Mesh):
+        if geometry.IsValid:
+            duplicate = geometry.DuplicateMesh()
+
+            if duplicate is not None and duplicate.IsValid:
+                meshes.append(duplicate)
+
+        return meshes
+
+    if isinstance(geometry, rg.Brep):
+        return mesh_from_brep(geometry)
+
+    if isinstance(geometry, rg.Extrusion):
+        try:
+            return mesh_from_brep(geometry.ToBrep())
+        except Exception:
+            return meshes
+
+    if isinstance(geometry, rg.Surface):
+        try:
+            return mesh_from_brep(geometry.ToBrep())
+        except Exception:
+            return meshes
+
+    return meshes
+
+
+def build_analysis_mesh(geometry_values, role_name, required):
+    """
+    Convert a geometry list to one analysis mesh while preserving its role.
+
+    Context Buildings and Design Volume must call this function separately.
+    """
+    warnings = []
+    errors = []
+    source_mesh_count = 0
+    joined_mesh = rg.Mesh()
+    geometries = normalize_sequence(geometry_values)
+
+    if not geometries:
+        message = "{0} is empty.".format(role_name)
+
+        if required:
+            errors.append(message)
+        else:
+            warnings.append(
+                message + " Baseline rays will be treated as unobstructed."
+            )
+
+        return None, errors, warnings, source_mesh_count
+
+    for index, geometry in enumerate(geometries):
+        geometry = unwrap_gh_value(geometry)
+
+        if geometry is None:
+            warnings.append(
+                "{0} item {1} is null and was ignored.".format(
+                    role_name,
+                    index
+                )
+            )
+            continue
+
+        if geometry_type_name(geometry) == "SubD":
+            warnings.append(
+                "{0} item {1} is a SubD and was safely ignored. Rhino 7 "
+                "does not mesh SubD here. Convert it to a Brep or Mesh in "
+                "Rhino and connect it again.".format(role_name, index)
+            )
+            continue
+
+        converted = convert_geometry_to_meshes(geometry)
+
+        if not converted:
+            warnings.append(
+                "{0} item {1} could not be converted to a valid mesh. "
+                "Type: {2}.".format(
+                    role_name,
+                    index,
+                    geometry_type_name(geometry)
+                )
+            )
+            continue
+
+        for mesh in converted:
+            try:
+                joined_mesh.Append(mesh)
+                source_mesh_count += 1
+            except Exception:
+                warnings.append(
+                    "{0} mesh generated from item {1} could not be "
+                    "appended.".format(role_name, index)
+                )
+
+    if source_mesh_count == 0:
+        message = "{0} contains no usable mesh geometry.".format(role_name)
+
+        if required:
+            errors.append(message)
+        else:
+            warnings.append(
+                message + " Baseline rays will be treated as unobstructed."
+            )
+
+        return None, errors, warnings, 0
+
+    try:
+        joined_mesh.Vertices.CombineIdentical(True, True)
+    except Exception:
+        pass
+
+    try:
+        joined_mesh.Faces.CullDegenerateFaces()
+    except Exception:
+        pass
+
+    try:
+        joined_mesh.Compact()
+    except Exception:
+        pass
+
+    if not joined_mesh.IsValid or joined_mesh.Faces.Count == 0:
+        message = (
+            "{0} joined mesh is invalid or contains no faces.".format(
+                role_name
+            )
+        )
+
+        if required:
+            errors.append(message)
+        else:
+            warnings.append(
+                message + " Baseline rays will be treated as unobstructed."
+            )
+
+        return None, errors, warnings, 0
+
+    return joined_mesh, errors, warnings, source_mesh_count
+
+
+def mesh_statistics(mesh):
+    """Return vertex and face counts for a mesh."""
+    if mesh is None:
+        return 0, 0
+
+    try:
+        vertex_count = int(mesh.Vertices.Count)
+    except Exception:
+        vertex_count = 0
+
+    try:
+        face_count = int(mesh.Faces.Count)
+    except Exception:
+        face_count = 0
+
+    return vertex_count, face_count
+
+
+def analysis_model_scale(points, meshes):
+    """Estimate a geometric scale for the ray-origin offset."""
+    # IronPython 2.7 has no nonlocal. Six plain floats in one mutable list
+    # replace the rebound Point3d locals and also avoid depending on
+    # in-place mutation of a boxed RhinoCommon value type.
+    extent = [None, None, None, None, None, None]
+
+    def include_point(point):
+        if extent[0] is None:
+            extent[0] = float(point.X)
+            extent[1] = float(point.Y)
+            extent[2] = float(point.Z)
+            extent[3] = float(point.X)
+            extent[4] = float(point.Y)
+            extent[5] = float(point.Z)
+            return
+
+        extent[0] = min(extent[0], point.X)
+        extent[1] = min(extent[1], point.Y)
+        extent[2] = min(extent[2], point.Z)
+        extent[3] = max(extent[3], point.X)
+        extent[4] = max(extent[4], point.Y)
+        extent[5] = max(extent[5], point.Z)
+
+    for point in points:
+        include_point(point)
+
+    for mesh in meshes:
+        if mesh is None:
+            continue
+
+        try:
+            bounding_box = mesh.GetBoundingBox(True)
+
+            if bounding_box.IsValid:
+                include_point(bounding_box.Min)
+                include_point(bounding_box.Max)
+        except Exception:
+            pass
+
+    if extent[0] is None:
+        return 1.0
+
+    try:
+        minimum = rg.Point3d(extent[0], extent[1], extent[2])
+        maximum = rg.Point3d(extent[3], extent[4], extent[5])
+        diagonal = minimum.DistanceTo(maximum)
+        return max(float(diagonal), 1.0)
+    except Exception:
+        return 1.0
+
+
+# =============================================================================
+# TIME AND SOLAR POSITION
+# =============================================================================
+
+def decimal_hour_to_datetime(base_date, decimal_hour):
+    """Convert a local decimal clock hour into a datetime."""
+    total_seconds = int(round(float(decimal_hour) * 3600.0))
+    return base_date + timedelta(seconds=total_seconds)
+
+
+def generate_time_intervals(
+    year,
+    month,
+    day,
+    start_hour,
+    end_hour,
+    time_step_minutes
+):
+    """Generate midpoint samples with their real integration durations."""
+    base_date = datetime(int(year), int(month), int(day), 0, 0, 0)
+    start_datetime = decimal_hour_to_datetime(base_date, start_hour)
+    end_datetime = decimal_hour_to_datetime(base_date, end_hour)
+    requested_step = timedelta(minutes=float(time_step_minutes))
+
+    intervals = []
+    current_start = start_datetime
+
+    while current_start < end_datetime:
+        current_end = min(current_start + requested_step, end_datetime)
+        interval_delta = current_end - current_start
+        interval_seconds = timedelta_to_seconds(interval_delta)
+        duration_hours = interval_seconds / 3600.0
+        midpoint = current_start + timedelta(
+            seconds=interval_seconds * 0.5
+        )
+
+        intervals.append(
+            {
+                "start": current_start,
+                "end": current_end,
+                "datetime": midpoint,
+                "duration_hours": duration_hours
+            }
+        )
+
+        current_start = current_end
+
+    return intervals
+
+
+def fractional_year_radians(local_datetime):
+    """Calculate the existing solver's NOAA fractional-year approximation."""
+    day_of_year = local_datetime.timetuple().tm_yday
+
+    hour = (
+        local_datetime.hour +
+        local_datetime.minute / 60.0 +
+        local_datetime.second / 3600.0
+    )
+
+    return (
+        2.0 *
+        math.pi /
+        365.0 *
+        (
+            day_of_year -
+            1 +
+            (hour - 12.0) / 24.0
+        )
+    )
+
+
+def equation_of_time_minutes(gamma):
+    """NOAA approximation of equation of time in minutes."""
+    return 229.18 * (
+        0.000075 +
+        0.001868 * math.cos(gamma) -
+        0.032077 * math.sin(gamma) -
+        0.014615 * math.cos(2.0 * gamma) -
+        0.040849 * math.sin(2.0 * gamma)
+    )
+
+
+def solar_declination_radians(gamma):
+    """NOAA approximation of solar declination in radians."""
+    return (
+        0.006918 -
+        0.399912 * math.cos(gamma) +
+        0.070257 * math.sin(gamma) -
+        0.006758 * math.cos(2.0 * gamma) +
+        0.000907 * math.sin(2.0 * gamma) -
+        0.002697 * math.cos(3.0 * gamma) +
+        0.001480 * math.sin(3.0 * gamma)
+    )
+
+
+def calculate_solar_position(
+    local_datetime,
+    latitude_degrees,
+    longitude_degrees,
+    timezone_hours
+):
+    """
+    Calculate solar altitude and clockwise-from-north azimuth in radians.
+
+    Longitude is east-positive and TimeZone is the UTC offset in hours.
+    """
+    latitude = math.radians(float(latitude_degrees))
+    longitude = float(longitude_degrees)
+    timezone = float(timezone_hours)
+
+    gamma = fractional_year_radians(local_datetime)
+    equation_of_time = equation_of_time_minutes(gamma)
+    declination = solar_declination_radians(gamma)
+
+    local_minutes = (
+        local_datetime.hour * 60.0 +
+        local_datetime.minute +
+        local_datetime.second / 60.0
+    )
+
+    time_offset = (
+        equation_of_time +
+        4.0 * longitude -
+        60.0 * timezone
+    )
+
+    true_solar_time = (local_minutes + time_offset) % 1440.0
+    hour_angle_degrees = true_solar_time / 4.0 - 180.0
+
+    if hour_angle_degrees < -180.0:
+        hour_angle_degrees += 360.0
+
+    hour_angle = math.radians(hour_angle_degrees)
+
+    cosine_zenith = (
+        math.sin(latitude) * math.sin(declination) +
+        math.cos(latitude) *
+        math.cos(declination) *
+        math.cos(hour_angle)
+    )
+
+    cosine_zenith = clamp(cosine_zenith, -1.0, 1.0)
+    zenith = math.acos(cosine_zenith)
+    altitude = math.pi / 2.0 - zenith
+
+    azimuth_from_south = math.atan2(
+        math.sin(hour_angle),
+        (
+            math.cos(hour_angle) * math.sin(latitude) -
+            math.tan(declination) * math.cos(latitude)
+        )
+    )
+
+    azimuth_from_north = (
+        azimuth_from_south + math.pi
+    ) % (2.0 * math.pi)
+
+    return altitude, azimuth_from_north
+
+
+def solar_position_to_vector(
+    altitude,
+    azimuth,
+    north_vector,
+    east_vector
+):
+    """Convert altitude and azimuth to a normalized Rhino world vector."""
+    horizontal_factor = math.cos(altitude)
+    north_component = horizontal_factor * math.cos(azimuth)
+    east_component = horizontal_factor * math.sin(azimuth)
+    vertical_component = math.sin(altitude)
+
+    vector = (
+        north_vector * north_component +
+        east_vector * east_component +
+        rg.Vector3d.ZAxis * vertical_component
+    )
+
+    if not vector.Unitize():
+        return None
+
+    return vector
+
+
+def calculate_sun_samples(
+    time_intervals,
+    latitude,
+    longitude,
+    timezone,
+    north_vector,
+    east_vector
+):
+    """Calculate sun vectors for intervals whose midpoint is above horizon."""
+    samples = []
+    below_horizon_count = 0
+
+    for interval_index, interval in enumerate(time_intervals):
+        altitude, azimuth = calculate_solar_position(
+            interval["datetime"],
+            latitude,
+            longitude,
+            timezone
+        )
+
+        if altitude <= 0.0:
+            below_horizon_count += 1
+            continue
+
+        vector = solar_position_to_vector(
+            altitude,
+            azimuth,
+            north_vector,
+            east_vector
+        )
+
+        if vector is None:
+            continue
+
+        samples.append(
+            {
+                "sample_index": interval_index,
+                "start": interval["start"],
+                "end": interval["end"],
+                "datetime": interval["datetime"],
+                "duration_hours": interval["duration_hours"],
+                "altitude": altitude,
+                "azimuth": azimuth,
+                "vector": vector
+            }
+        )
+
+    return samples, below_horizon_count
+
+
+# =============================================================================
+# DUAL-SCENARIO RAY SOLVER
+# =============================================================================
+
+def ray_mesh_hit(
+    point,
+    sun_vector,
+    mesh,
+    origin_offset,
+    error_counter
+):
+    """
+    Return obstruction status, hit distance, and hit point.
+
+    MeshRay exceptions are conservatively treated as blocked and counted.
+    """
+    if mesh is None:
+        return False, None, None
+
+    ray_origin = point + sun_vector * origin_offset
+    ray = rg.Ray3d(ray_origin, sun_vector)
+
+    try:
+        distance = rg.Intersect.Intersection.MeshRay(mesh, ray)
+    except Exception:
+        error_counter[0] += 1
+        return True, None, None
+
+    if distance < 0.0:
+        return False, None, None
+
+    hit_point = ray_origin + sun_vector * distance
+    return True, float(distance), hit_point
+
+
+def make_constraint_event(
+    point_index,
+    point,
+    sample,
+    hit_distance,
+    hit_point
+):
+    """Create one design-blocking event for later constraint geometry work."""
+    if hit_point is None:
+        constraint_line = None
+    else:
+        try:
+            constraint_line = rg.Line(point, hit_point)
+        except Exception:
+            constraint_line = None
+
+    return {
+        "Schema": "SolarConstraintEvent.v1",
+        "ProtectedPointIndex": int(point_index),
+        "ProtectedPoint": point,
+        "SampleIndex": int(sample["sample_index"]),
+        "IntervalStart": sample["start"].isoformat(),
+        "IntervalEnd": sample["end"].isoformat(),
+        "SampleTime": sample["datetime"].isoformat(),
+        "DurationHours": float(sample["duration_hours"]),
+        "SolarAltitudeDegrees": math.degrees(sample["altitude"]),
+        "SolarAzimuthDegrees": math.degrees(sample["azimuth"]),
+        "SunVector": sample["vector"],
+        "ConstraintLine": constraint_line,
+        "DesignHitPoint": hit_point,
+        "DesignHitDistance": hit_distance
+    }
+
+
+def calculate_qualified_accumulated_hours(
+    direct_sun_flags,
+    sun_samples,
+    minimum_continuous_minutes
+):
+    """
+    Sum only direct-sun runs that reach the minimum continuous duration.
+
+    All durations use each sample interval's real integration weight. A gap
+    between active sun samples, including a below-horizon interval, terminates
+    the current run. A threshold of zero preserves raw accumulated sun hours.
+    """
+    if len(direct_sun_flags) != len(sun_samples):
+        raise ValueError(
+            "Direct-sun flags and sun samples must have matching lengths."
+        )
+
+    minimum_hours = float(minimum_continuous_minutes) / 60.0
+    raw_hours = 0.0
+    previous_sample_end = None
+    run_durations = []
+
+    # IronPython 2.7 has no nonlocal. Single-element lists carry the two
+    # accumulators the closure has to rebind, matching the counter style
+    # already used elsewhere in this file.
+    qualified_hours = [0.0]
+    current_run_hours = [0.0]
+
+    def close_current_run():
+        if current_run_hours[0] <= 0.0:
+            return
+
+        run_duration = round(current_run_hours[0], 10)
+        run_durations.append(run_duration)
+
+        if run_duration + EPSILON >= minimum_hours:
+            qualified_hours[0] += run_duration
+
+        current_run_hours[0] = 0.0
+
+    for sample_index, sample in enumerate(sun_samples):
+        sample_start = sample.get("start")
+
+        if (
+            previous_sample_end is not None and
+            sample_start is not None and
+            sample_start > previous_sample_end
+        ):
+            close_current_run()
+
+        if direct_sun_flags[sample_index]:
+            duration_hours = float(sample["duration_hours"])
+            raw_hours += duration_hours
+            current_run_hours[0] += duration_hours
+        else:
+            close_current_run()
+
+        previous_sample_end = sample.get("end")
+
+    close_current_run()
+
+    return (
+        round(qualified_hours[0], 10),
+        round(raw_hours, 10),
+        run_durations
+    )
+
+
+def make_violation_record(
+    point_index,
+    point,
+    baseline_hours,
+    final_hours,
+    raw_baseline_hours,
+    raw_final_hours,
+    minimum_continuous_minutes,
+    baseline_run_durations,
+    final_run_durations,
+    required_hours,
+    impact_tolerance
+):
+    """Create the complete result record for one affected or violating point."""
+    lost_hours = max(0.0, baseline_hours - final_hours)
+    raw_lost_hours = max(0.0, raw_baseline_hours - raw_final_hours)
+    qualification_adjustment = lost_hours - raw_lost_hours
+    affected = lost_hours > impact_tolerance
+    violation = final_hours + EPSILON < required_hours
+    baseline_violation = baseline_hours + EPSILON < required_hours
+    design_caused_violation = (
+        affected and
+        not baseline_violation and
+        violation
+    )
+
+    if design_caused_violation:
+        status = "Design-Caused Violation"
+    elif affected and violation:
+        status = "Affected and Violating"
+    elif affected:
+        status = "Affected but Compliant"
+    elif violation:
+        status = "Existing Context Violation"
+    else:
+        status = "Compliant and Unaffected"
+
+    return {
+        "Schema": "SolarPointResult.v1",
+        "ProtectedPointIndex": int(point_index),
+        "Point": point,
+        "BaselineHours": float(baseline_hours),
+        "SunHours": float(final_hours),
+        "LostHours": float(lost_hours),
+        "RawBaselineHours": float(raw_baseline_hours),
+        "RawSunHours": float(raw_final_hours),
+        "RawLostHours": float(raw_lost_hours),
+        "QualificationAdjustmentHours": float(
+            qualification_adjustment
+        ),
+        "MinimumContinuousMinutes": float(
+            minimum_continuous_minutes
+        ),
+        "BaselineContinuousRunsHours": list(
+            baseline_run_durations
+        ),
+        "FinalContinuousRunsHours": list(final_run_durations),
+        "RequiredSunHours": float(required_hours),
+        "Affected": bool(affected),
+        "Violation": bool(violation),
+        "BaselineViolation": bool(baseline_violation),
+        "DesignCausedViolation": bool(design_caused_violation),
+        "Status": status
+    }
+
+
+def estimate_ray_tests(point_count, sample_count, has_context):
+    """Return the conservative maximum MeshRay call count."""
+    tests_per_sample = 2 if has_context else 1
+    return int(point_count) * int(sample_count) * tests_per_sample
+
+
+def solve_protected_points(
+    protected_points,
+    sun_samples,
+    context_mesh,
+    design_mesh,
+    origin_offset,
+    minimum_continuous_minutes,
+    required_hours,
+    impact_tolerance
+):
+    """
+    Calculate baseline and final sun hours and design-blocking events.
+
+    Returns complete-point results only. If Escape is pressed during one point,
+    that incomplete point and its events are discarded.
+    """
+    sun_hours = []
+    all_point_records = []
+    constraint_events_by_point = []
+
+    context_error_counter = [0]
+    design_error_counter = [0]
+    cancelled = False
+
+    # IronPython 2.7 has no nonlocal. Single-element lists carry the two ray
+    # counters the closure has to rebind, matching context_error_counter above.
+    ray_test_counter = [0]
+    rays_since_escape_check = [0]
+
+    def register_ray_test_and_check_escape():
+        """Count one actual MeshRay call and periodically check Escape."""
+        ray_test_counter[0] += 1
+        rays_since_escape_check[0] += 1
+
+        if rays_since_escape_check[0] < PROGRESS_CHECK_INTERVAL:
+            return False
+
+        rays_since_escape_check[0] = 0
+        return check_escape_key()
+
+    for point_index, point in enumerate(protected_points):
+        baseline_direct_sun = []
+        final_direct_sun = []
+        point_events = []
+        point_complete = True
+
+        for sample in sun_samples:
+            context_blocked, _, _ = ray_mesh_hit(
+                point,
+                sample["vector"],
+                context_mesh,
+                origin_offset,
+                context_error_counter
+            )
+
+            if context_mesh is not None:
+                if register_ray_test_and_check_escape():
+                    point_complete = False
+                    cancelled = True
+                    break
+
+            if context_blocked:
+                baseline_direct_sun.append(False)
+                final_direct_sun.append(False)
+                continue
+
+            baseline_direct_sun.append(True)
+
+            (
+                design_blocked,
+                design_hit_distance,
+                design_hit_point
+            ) = ray_mesh_hit(
+                point,
+                sample["vector"],
+                design_mesh,
+                origin_offset,
+                design_error_counter
+            )
+
+            if register_ray_test_and_check_escape():
+                point_complete = False
+                cancelled = True
+                break
+
+            if design_blocked:
+                final_direct_sun.append(False)
+                point_events.append(
+                    make_constraint_event(
+                        point_index,
+                        point,
+                        sample,
+                        design_hit_distance,
+                        design_hit_point
+                    )
+                )
+            else:
+                final_direct_sun.append(True)
+
+        if not point_complete:
+            break
+
+        (
+            baseline_hours,
+            raw_baseline_hours,
+            baseline_run_durations
+        ) = calculate_qualified_accumulated_hours(
+            baseline_direct_sun,
+            sun_samples,
+            minimum_continuous_minutes
+        )
+
+        (
+            final_hours,
+            raw_final_hours,
+            final_run_durations
+        ) = calculate_qualified_accumulated_hours(
+            final_direct_sun,
+            sun_samples,
+            minimum_continuous_minutes
+        )
+
+        point_record = make_violation_record(
+            point_index,
+            point,
+            baseline_hours,
+            final_hours,
+            raw_baseline_hours,
+            raw_final_hours,
+            minimum_continuous_minutes,
+            baseline_run_durations,
+            final_run_durations,
+            required_hours,
+            impact_tolerance
+        )
+
+        design_caused_violation = point_record["DesignCausedViolation"]
+
+        for event in point_events:
+            event["PointSunHours"] = final_hours
+            event["PointBaselineHours"] = baseline_hours
+            event["PointLostHours"] = point_record["LostHours"]
+            event["PointRawSunHours"] = raw_final_hours
+            event["PointRawBaselineHours"] = raw_baseline_hours
+            event["PointRawLostHours"] = point_record["RawLostHours"]
+            event["QualificationAdjustmentHours"] = point_record[
+                "QualificationAdjustmentHours"
+            ]
+            event["MinimumContinuousMinutes"] = (
+                minimum_continuous_minutes
+            )
+            event["PointViolation"] = point_record["Violation"]
+            event["DesignCausedViolation"] = design_caused_violation
+
+        sun_hours.append(final_hours)
+        all_point_records.append(point_record)
+        constraint_events_by_point.append(point_events)
+
+    return {
+        "sun_hours": sun_hours,
+        "point_records": all_point_records,
+        "constraint_events": constraint_events_by_point,
+        "cancelled": cancelled,
+        "ray_test_count": ray_test_counter[0],
+        "context_ray_errors": context_error_counter[0],
+        "design_ray_errors": design_error_counter[0]
+    }
+
+
+# =============================================================================
+# OUTPUT BUILDING
+# =============================================================================
+
+def build_violation_data(point_records):
+    """
+    Return records for every affected or violating point.
+
+    The Point field therefore also acts as the MVP affected/violation point
+    list without losing the baseline and attribution data.
+    """
+    records = []
+
+    for record in point_records:
+        if record["Affected"] or record["Violation"]:
+            records.append(record)
+
+    return records
+
+
+def build_constraint_tree(constraint_events_by_point):
+    """Build one ConstraintData branch per point that has blocking events."""
+    tree = DataTree[object]()
+
+    for point_index, point_events in enumerate(
+        constraint_events_by_point
+    ):
+        if not point_events:
+            continue
+
+        path = GH_Path(point_index)
+
+        for event in point_events:
+            tree.Add(event, path)
+
+    return tree
+
+
+def result_statistics(point_records):
+    """Calculate point and hour statistics for reporting."""
+    if not point_records:
+        return {
+            "minimum": 0.0,
+            "maximum": 0.0,
+            "average": 0.0,
+            "baseline_average": 0.0,
+            "raw_average": 0.0,
+            "raw_baseline_average": 0.0,
+            "lost_total": 0.0,
+            "raw_lost_total": 0.0,
+            "affected_count": 0,
+            "violation_count": 0,
+            "design_caused_violation_count": 0,
+            "constraint_event_count": 0
+        }
+
+    final_values = [record["SunHours"] for record in point_records]
+    baseline_values = [
+        record["BaselineHours"] for record in point_records
+    ]
+    raw_final_values = [
+        record["RawSunHours"] for record in point_records
+    ]
+    raw_baseline_values = [
+        record["RawBaselineHours"] for record in point_records
+    ]
+
+    return {
+        "minimum": min(final_values),
+        "maximum": max(final_values),
+        "average": sum(final_values) / len(final_values),
+        "baseline_average": (
+            sum(baseline_values) / len(baseline_values)
+        ),
+        "raw_average": (
+            sum(raw_final_values) / len(raw_final_values)
+        ),
+        "raw_baseline_average": (
+            sum(raw_baseline_values) / len(raw_baseline_values)
+        ),
+        "lost_total": sum(
+            record["LostHours"] for record in point_records
+        ),
+        "raw_lost_total": sum(
+            record["RawLostHours"] for record in point_records
+        ),
+        "affected_count": sum(
+            1 for record in point_records if record["Affected"]
+        ),
+        "violation_count": sum(
+            1 for record in point_records if record["Violation"]
+        ),
+        "design_caused_violation_count": sum(
+            1 for record in point_records
+            if record["DesignCausedViolation"]
+        ),
+        "constraint_event_count": 0
+    }
+
+
+def build_report(
+    status,
+    elapsed_seconds,
+    input_point_count,
+    processed_point_count,
+    time_intervals,
+    sun_samples,
+    below_horizon_count,
+    context_mesh,
+    context_source_count,
+    design_mesh,
+    design_source_count,
+    ray_test_count,
+    context_ray_errors,
+    design_ray_errors,
+    result_records,
+    constraint_event_count,
+    origin_offset,
+    latitude,
+    longitude,
+    timezone,
+    year,
+    month,
+    day,
+    start_hour,
+    end_hour,
+    time_step,
+    minimum_continuous_minutes,
+    required_hours,
+    impact_tolerance,
+    warnings
+):
+    """Build a complete, Panel-friendly report."""
+    context_vertices, context_faces = mesh_statistics(context_mesh)
+    design_vertices, design_faces = mesh_statistics(design_mesh)
+    statistics = result_statistics(result_records)
+    statistics["constraint_event_count"] = constraint_event_count
+
+    report = [
+        "Status: {0}".format(status),
+        "Solver: Solar Constraint Solver MVP",
+        "Runtime: Rhino 7 GhPython IronPython 2.7",
+        "Calculation Time: {0} seconds".format(
+            format_number(elapsed_seconds, 3)
+        ),
+        "--- Protected Points ---",
+        "Input Protected Points: {0}".format(input_point_count),
+        "Processed Protected Points: {0}".format(processed_point_count),
+        "Affected Points: {0}".format(
+            statistics["affected_count"]
+        ),
+        "Violating Points: {0}".format(
+            statistics["violation_count"]
+        ),
+        "Design-Caused Violations: {0}".format(
+            statistics["design_caused_violation_count"]
+        ),
+        "--- Solar Parameters ---",
+        "Date: {0:04d}-{1:02d}-{2:02d}".format(
+            int(year),
+            int(month),
+            int(day)
+        ),
+        "Local Time Range: {0} to {1}".format(
+            format_number(start_hour, 3),
+            format_number(end_hour, 3)
+        ),
+        "Time Step: {0} minutes".format(
+            format_number(time_step, 3)
+        ),
+        "Minimum Continuous Segment: {0} minutes".format(
+            format_number(minimum_continuous_minutes, 3)
+        ),
+        (
+            "Sun-Hour Metric: Accumulated Direct Sun from Qualified "
+            "Continuous Segments"
+        ),
+        "Time Intervals: {0}".format(len(time_intervals)),
+        "Sun-Above-Horizon Intervals: {0}".format(
+            len(sun_samples)
+        ),
+        "Below-Horizon Intervals: {0}".format(
+            below_horizon_count
+        ),
+        "Latitude: {0} degrees".format(
+            format_number(latitude, 6)
+        ),
+        "Longitude: {0} degrees".format(
+            format_number(longitude, 6)
+        ),
+        "Time Zone: UTC{0}{1}".format(
+            "+" if float(timezone) >= 0.0 else "",
+            format_number(timezone, 2)
+        ),
+        "Required Sun Hours: {0}".format(
+            format_number(required_hours, 4)
+        ),
+        "Impact Tolerance: {0} hours".format(
+            format_number(impact_tolerance, 6)
+        ),
+        "--- Geometry ---",
+        "Model Units: {0}".format(active_document_units()),
+        "Ray Origin Offset: {0}".format(
+            format_number(origin_offset, 9)
+        ),
+        "Context Source Mesh Parts: {0}".format(
+            context_source_count
+        ),
+        "Context Mesh Vertices: {0}".format(context_vertices),
+        "Context Mesh Faces: {0}".format(context_faces),
+        "Design Source Mesh Parts: {0}".format(
+            design_source_count
+        ),
+        "Design Mesh Vertices: {0}".format(design_vertices),
+        "Design Mesh Faces: {0}".format(design_faces),
+        "--- Calculation ---",
+        "MeshRay Calls: {0}".format(ray_test_count),
+        "Context MeshRay Errors: {0}".format(context_ray_errors),
+        "Design MeshRay Errors: {0}".format(design_ray_errors),
+        "Constraint Events: {0}".format(
+            statistics["constraint_event_count"]
+        ),
+        "Average Raw Baseline Sun Hours: {0}".format(
+            format_number(statistics["raw_baseline_average"], 4)
+        ),
+        "Average Raw Final Sun Hours: {0}".format(
+            format_number(statistics["raw_average"], 4)
+        ),
+        "Average Baseline Sun Hours: {0}".format(
+            format_number(statistics["baseline_average"], 4)
+        ),
+        "Minimum Final Sun Hours: {0}".format(
+            format_number(statistics["minimum"], 4)
+        ),
+        "Maximum Final Sun Hours: {0}".format(
+            format_number(statistics["maximum"], 4)
+        ),
+        "Average Final Sun Hours: {0}".format(
+            format_number(statistics["average"], 4)
+        ),
+        "Total Lost Point-Hours: {0}".format(
+            format_number(statistics["lost_total"], 4)
+        ),
+        "Total Raw Lost Point-Hours: {0}".format(
+            format_number(statistics["raw_lost_total"], 4)
+        ),
+        "--- Output Contract ---",
+        "SunHours[i] corresponds to ProtectedPoints[i].",
+        (
+            "ViolationData contains affected or violating "
+            "SolarPointResult.v1 records."
+        ),
+        (
+            "ConstraintData branch {i} contains SolarConstraintEvent.v1 "
+            "records for ProtectedPoints[i]."
+        ),
+        (
+            "Constraint events are emitted only when Context is clear and "
+            "Design Volume blocks the sun."
+        ),
+        (
+            "SunHours excludes direct-sun runs shorter than "
+            "MinimumContinuousMinutes."
+        ),
+        (
+            "Raw values are retained in SolarPointResult.v1 because "
+            "continuity filtering can amplify or reduce qualified loss."
+        ),
+        "No forbidden volume or Boolean geometry is generated.",
+        "This output is for design-stage analysis, not regulatory reporting."
+    ]
+
+    if warnings:
+        report.append("--- Warnings ---")
+
+        for warning in warnings:
+            report.append("Warning: {0}".format(warning))
+
+    return report
+
+
+def build_error_report(errors, warnings=None):
+    """Build a readable error report without raising a component exception."""
+    report = ["Status: Input Error"]
+
+    for error in errors:
+        report.append("Error: {0}".format(error))
+
+    if warnings:
+        for warning in warnings:
+            report.append("Warning: {0}".format(warning))
+
+    return report
+
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+def execute(
+    ProtectedPoints,
+    DesignVolume,
+    ContextBuildings,
+    North,
+    Latitude,
+    Longitude,
+    TimeZone,
+    Year,
+    Month,
+    Day,
+    StartHour,
+    EndHour,
+    TimeStep,
+    MinimumContinuousMinutes,
+    RequiredSunHours,
+    ImpactTolerance,
+    Run
+):
+    """Run the complete Solar Constraint Solver MVP workflow."""
+    empty_constraint_tree = DataTree[object]()
+
+    if not bool(Run):
+        return (
+            [],
+            [],
+            empty_constraint_tree,
+            [
+                "Status: Waiting",
+                "Set Run to True to calculate.",
+                (
+                    "MVP outputs final sun hours, point result records, "
+                    "and design-blocking constraint events."
+                )
+            ]
+        )
+
+    calculation_start = time.time()
+    all_errors = []
+    all_warnings = []
+
+    (
+        input_errors,
+        input_warnings,
+        protected_points
+    ) = validate_inputs(
+        ProtectedPoints,
+        Latitude,
+        Longitude,
+        TimeZone,
+        Year,
+        Month,
+        Day,
+        StartHour,
+        EndHour,
+        TimeStep,
+        MinimumContinuousMinutes,
+        RequiredSunHours,
+        ImpactTolerance
+    )
+
+    all_errors.extend(input_errors)
+    all_warnings.extend(input_warnings)
+
+    north_errors, north_vector, east_vector = (
+        validate_and_normalize_north(North)
+    )
+    all_errors.extend(north_errors)
+
+    if all_errors:
+        return (
+            [],
+            [],
+            empty_constraint_tree,
+            build_error_report(all_errors, all_warnings)
+        )
+
+    (
+        context_mesh,
+        context_errors,
+        context_warnings,
+        context_source_count
+    ) = build_analysis_mesh(
+        ContextBuildings,
+        "ContextBuildings",
+        False
+    )
+
+    (
+        design_mesh,
+        design_errors,
+        design_warnings,
+        design_source_count
+    ) = build_analysis_mesh(
+        DesignVolume,
+        "DesignVolume",
+        True
+    )
+
+    all_errors.extend(context_errors)
+    all_errors.extend(design_errors)
+    all_warnings.extend(context_warnings)
+    all_warnings.extend(design_warnings)
+
+    if all_errors:
+        return (
+            [],
+            [],
+            empty_constraint_tree,
+            build_error_report(all_errors, all_warnings)
+        )
+
+    latitude = float(unwrap_gh_value(Latitude))
+    longitude = float(unwrap_gh_value(Longitude))
+    timezone = float(unwrap_gh_value(TimeZone))
+    year = int(unwrap_gh_value(Year))
+    month = int(unwrap_gh_value(Month))
+    day = int(unwrap_gh_value(Day))
+    start_hour = float(unwrap_gh_value(StartHour))
+    end_hour = float(unwrap_gh_value(EndHour))
+    time_step = float(unwrap_gh_value(TimeStep))
+    minimum_continuous_minutes = float(
+        unwrap_gh_value(MinimumContinuousMinutes)
+    )
+    required_hours = float(unwrap_gh_value(RequiredSunHours))
+    impact_tolerance = float(unwrap_gh_value(ImpactTolerance))
+
+    time_intervals = generate_time_intervals(
+        year,
+        month,
+        day,
+        start_hour,
+        end_hour,
+        time_step
+    )
+
+    sun_samples, below_horizon_count = calculate_sun_samples(
+        time_intervals,
+        latitude,
+        longitude,
+        timezone,
+        north_vector,
+        east_vector
+    )
+
+    if not sun_samples:
+        all_warnings.append(
+            "The sun is at or below the horizon at every interval midpoint. "
+            "All SunHours values will be zero."
+        )
+
+    estimated_tests = estimate_ray_tests(
+        len(protected_points),
+        len(sun_samples),
+        context_mesh is not None
+    )
+
+    if estimated_tests > MAX_ESTIMATED_RAY_TESTS:
+        all_errors.append(
+            "Estimated MeshRay calls ({0}) exceed the MVP safety limit "
+            "({1}). Reduce ProtectedPoints, enlarge TimeStep, or shorten "
+            "the time range.".format(
+                estimated_tests,
+                MAX_ESTIMATED_RAY_TESTS
+            )
+        )
+
+        return (
+            [],
+            [],
+            empty_constraint_tree,
+            build_error_report(all_errors, all_warnings)
+        )
+
+    tolerance = active_document_tolerance()
+    model_scale = analysis_model_scale(
+        protected_points,
+        [context_mesh, design_mesh]
+    )
+    origin_offset = max(
+        tolerance * 10.0,
+        model_scale * RAY_ORIGIN_OFFSET_FACTOR
+    )
+
+    solver_result = solve_protected_points(
+        protected_points,
+        sun_samples,
+        context_mesh,
+        design_mesh,
+        origin_offset,
+        minimum_continuous_minutes,
+        required_hours,
+        impact_tolerance
+    )
+
+    sun_hours = solver_result["sun_hours"]
+    point_records = solver_result["point_records"]
+    constraint_events = solver_result["constraint_events"]
+    violation_data = build_violation_data(point_records)
+    constraint_tree = build_constraint_tree(constraint_events)
+
+    constraint_event_count = sum(
+        len(events) for events in constraint_events
+    )
+
+    if solver_result["context_ray_errors"] > 0:
+        all_warnings.append(
+            "{0} Context MeshRay call(s) failed and were conservatively "
+            "treated as blocked.".format(
+                solver_result["context_ray_errors"]
+            )
+        )
+
+    if solver_result["design_ray_errors"] > 0:
+        all_warnings.append(
+            "{0} Design MeshRay call(s) failed and were conservatively "
+            "treated as blocked. Failed calls have no reliable hit point."
+            .format(solver_result["design_ray_errors"])
+        )
+
+    if solver_result["cancelled"]:
+        status = "Cancelled"
+        all_warnings.append(
+            "Calculation was cancelled with Escape. Outputs contain only "
+            "fully completed ProtectedPoints from the start of the input list."
+        )
+    else:
+        status = "Completed"
+
+    elapsed_seconds = time.time() - calculation_start
+
+    report = build_report(
+        status,
+        elapsed_seconds,
+        len(protected_points),
+        len(point_records),
+        time_intervals,
+        sun_samples,
+        below_horizon_count,
+        context_mesh,
+        context_source_count,
+        design_mesh,
+        design_source_count,
+        solver_result["ray_test_count"],
+        solver_result["context_ray_errors"],
+        solver_result["design_ray_errors"],
+        point_records,
+        constraint_event_count,
+        origin_offset,
+        latitude,
+        longitude,
+        timezone,
+        year,
+        month,
+        day,
+        start_hour,
+        end_hour,
+        time_step,
+        minimum_continuous_minutes,
+        required_hours,
+        impact_tolerance,
+        all_warnings
+    )
+
+    return sun_hours, violation_data, constraint_tree, report
+
+
+# =============================================================================
+# GHPYTHON ENTRY POINT
+# =============================================================================
+#
+# Rhino 7 GhPython has no RunScript signature. The 17 component inputs arrive
+# as module-level names and the 4 component outputs are read back from
+# module-level names, so the workflow is called once here at import time.
+#
+# SunHours maintains the same item order as ProtectedPoints. ConstraintData
+# uses the original zero-based protected-point index as its GH_Path.
+
+try:
+    (
+        SunHours,
+        ViolationData,
+        ConstraintData,
+        Report
+    ) = execute(
+        ProtectedPoints,
+        DesignVolume,
+        ContextBuildings,
+        North,
+        Latitude,
+        Longitude,
+        TimeZone,
+        Year,
+        Month,
+        Day,
+        StartHour,
+        EndHour,
+        TimeStep,
+        MinimumContinuousMinutes,
+        RequiredSunHours,
+        ImpactTolerance,
+        Run
+    )
+
+except Exception as exception:
+    SunHours = []
+    ViolationData = []
+    ConstraintData = DataTree[object]()
+
+    Report = [
+        "Status: Runtime Error",
+        "Error Type: {0}".format(
+            type(exception).__name__
+        ),
+        "Error Message: {0}".format(
+            str(exception)
+        ),
+        "Check component inputs and Rhino geometry validity."
+    ]

@@ -5,6 +5,7 @@
 快速入口：
 
 - [快速开始](docs/QUICK_START.md)
+- [Rhino 7 组件0、1、2使用指南](docs/RHINO7_PIPELINE_GUIDE.md)
 - [上海设计阶段参数](docs/SHANGHAI_DESIGN_PROFILE.md)
 - [Rhino / Grasshopper 上机验收清单](docs/ON_MACHINE_TESTS.md)
 - [示例文件说明](examples/README.md)
@@ -42,16 +43,22 @@ SunlightEnvelope_Rhino8/
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 双场景约束分析 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) |
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 柱状体素生成 | [`SolarDesignVoxelizer_Rhino8_SDK.py`](src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py) |
 | Rhino 8 | Python 3 Script Component / SDK-Mode / 体素日照优化 | [`SolarVoxelOptimizer_Rhino8_SDK.py`](src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py) |
+| Rhino 7 | GhPython / IronPython 2.7 / 双场景约束分析 | [`SolarConstraintSolver_Rhino7_GhPython.py`](src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py) |
+| Rhino 7 | GhPython / IronPython 2.7 / 柱状体素生成 | [`SolarDesignVoxelizer_Rhino7_GhPython.py`](src/rhino7/SolarDesignVoxelizer_Rhino7_GhPython.py) |
+| Rhino 7 | GhPython / IronPython 2.7 / 体素日照优化 | [`SolarVoxelOptimizer_Rhino7_GhPython.py`](src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py) |
+
+R7 版与 R8 版共用同一套算法、编号规则和输出契约。差异集中在运行环境，
+详见[R7 与 R8 的差异](#r7-与-r8-的差异)。
 
 ## 组件0、1、2命名约定
 
 后续讨论、文档和验收统一使用以下简称：
 
-| 简称 | 正式职责 | 脚本 | 主要输出 |
-|---|---|---|---|
-| **组件0** | 日照计算与前后方案验证 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) | `SunHours`、`ViolationData`、`ConstraintData`、`Report` |
-| **组件1** | 将 `DesignVolume` 划分为可编号、可追踪的像素/体素块 | [`SolarDesignVoxelizer_Rhino8_SDK.py`](src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py) | `Voxels`、编号、柱号、层号、体积和 `VoxelTree` |
-| **组件2** | 对体素执行日照计算和约束切削 | [`SolarVoxelOptimizer_Rhino8_SDK.py`](src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py) | `KeptVoxels`、`RemovedVoxels`、`FinalSunHours` 和优化报告 |
+| 简称 | 正式职责 | Rhino 8 脚本 | Rhino 7 脚本 | 主要输出 |
+|---|---|---|---|---|
+| **组件0** | 日照计算与前后方案验证 | [`SolarConstraintSolver_Rhino8_SDK.py`](src/rhino8/SolarConstraintSolver_Rhino8_SDK.py) | [`SolarConstraintSolver_Rhino7_GhPython.py`](src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py) | `SunHours`、`ViolationData`、`ConstraintData`、`Report` |
+| **组件1** | 将 `DesignVolume` 划分为可编号、可追踪的像素/体素块 | [`SolarDesignVoxelizer_Rhino8_SDK.py`](src/rhino8/SolarDesignVoxelizer_Rhino8_SDK.py) | [`SolarDesignVoxelizer_Rhino7_GhPython.py`](src/rhino7/SolarDesignVoxelizer_Rhino7_GhPython.py) | `Voxels`、编号、柱号、层号、体积和 `VoxelTree` |
+| **组件2** | 对体素执行日照计算和约束切削 | [`SolarVoxelOptimizer_Rhino8_SDK.py`](src/rhino8/SolarVoxelOptimizer_Rhino8_SDK.py) | [`SolarVoxelOptimizer_Rhino7_GhPython.py`](src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py) | `KeptVoxels`、`RemovedVoxels`、`FinalSunHours` 和优化报告 |
 
 组件0可以在同一 Grasshopper 文件中放置两个实例：第一个分析原始
 `DesignVolume`，第二个独立验证组件2输出的 `KeptVoxels`。
@@ -82,6 +89,33 @@ DesignVolume → 组件1（切像素块）→ 组件2（日照 + 切削）
 下一项计划是为组件0补齐同等级的几何输入自适应，并验证“设置 Type
 Hint”和“不设置 Type Hint”两种接法得到完全一致的计算结果。详细验收
 条件记录在[开发路线图](docs/ROADMAP.md)。
+
+上表描述的是 R8 与 R7 共同的实现状态：R7 版从对应 R8 版逐行回移，
+几何解析兜底一并保留，因此组件0的“待补齐”在两个版本上同样成立。
+
+### R7 与 R8 的差异
+
+组件0、1、2各有一个 R7 版本。算法、编号规则、输出端名称和输出契约
+与 R8 完全一致，差异只在运行环境：
+
+| 项目 | Rhino 8 | Rhino 7 |
+|---|---|---|
+| 组件类型 | Python 3 Script Component，SDK-Mode | GhPython Component |
+| 端口配置 | `RunScript` 签名自动同步输入端 | **全部输入和输出必须手工创建和重命名** |
+| 入口形式 | `Script_Instance.RunScript` | 模块级 `execute(...)` 调用 |
+| 计时 | `time.perf_counter()` | `time.time()` |
+| 时长换算 | `timedelta.total_seconds()` 与 `timedelta / 2` | `timedelta_to_seconds()` 辅助函数 |
+| SubD | 直接支持 | **安全忽略并输出警告**，需先在 Rhino 中转为 Brep 或 Mesh |
+| 字典遍历顺序 | CPython 3 字典保持插入序 | 用 `collections.OrderedDict` 复刻插入序 |
+
+最后一项影响的是结果而不只是报告。组件2的贪心搜索在 `comparison_key`
+打平时保留先遇到的候选，所以候选字典的遍历顺序会决定平局时删除哪些
+体素。IronPython 2.7 的字典不保证顺序，R7 版因此对该字典改用
+`OrderedDict`，使其与 R8 的遍历顺序一致、结果可复现。
+
+R7 端口数量：组件0为17个输入、4个输出；组件1为4个输入、8个输出；
+组件2为20个输入、10个输出。名称区分大小写，必须与代码完全一致。
+完整清单写在各脚本的文件头文档串中。
 
 五个脚本保持相同的输入输出名称、采样方法、太阳位置算法和射线遮挡逻辑。连续版只改变 H 的时间统计方式：遮挡会中断当前时段，H 输出最长的一段连续直射日照时间。Script-Mode 版本手动设置接口，SDK-Mode 版本通过 `RunScript` 签名同步输入接口。
 
@@ -597,6 +631,18 @@ Python 输出原始 P 和 H 后，可以在 Grasshopper 中继续：
 - 不同 Context 面数下的性能测试。
 
 首次上机建议先运行本文的三个最小测试模型，再用于真实项目。
+
+### R7 组件0、1、2的验证状态
+
+三个 R7 管线组件由对应 R8 版本逐行回移，已完成：
+
+- IronPython 2.7 语法兼容性检查（AST 白名单扫描，无 Python 3 专有构造）；
+- 与 R8 原件的逐行差异复核，确认改动仅限运行环境适配；
+- 字典遍历顺序审计，确认组件2的贪心平局路径已恢复确定性。
+
+**尚未完成实机验证。** 首次在 Rhino 7 上使用前，应当先用与 R8 相同的
+输入跑一遍，并核对 `FinalSunHours` 与 R8 已验收结果一致，再用于真实
+项目。R8 侧的参照基线记录在[开发路线图](docs/ROADMAP.md)。
 
 ## 开源许可
 

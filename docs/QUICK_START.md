@@ -94,3 +94,16 @@ Sun-Hour Metric: Longest Continuous Direct Sun
 
 没有 Context 时显示 `Unobstructed Fast Path`，属于正常状态。
 
+## Rhino 7 上的组件0、1、2
+
+管线组件也有 R7 版本：
+
+| 组件 | 文件 | 输入 | 输出 |
+|---|---|---:|---:|
+| 组件0 | `src/rhino7/SolarConstraintSolver_Rhino7_GhPython.py` | 17 | 4 |
+| 组件1 | `src/rhino7/SolarDesignVoxelizer_Rhino7_GhPython.py` | 4 | 8 |
+| 组件2 | `src/rhino7/SolarVoxelOptimizer_Rhino7_GhPython.py` | 20 | 10 |
+
+R7 没有 SDK-Mode，端口不会自动同步，必须先手工建好全部端口再粘贴代码。
+完整端口表、连接要点和注意事项见
+[Rhino 7 组件0、1、2使用指南](RHINO7_PIPELINE_GUIDE.md)。

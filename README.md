@@ -82,16 +82,18 @@ DesignVolume → 组件1（切像素块）→ 组件2（日照 + 切削）
 
 | 组件 | 当前状态 | 说明 |
 |---|---|---|
-| 组件0 | **待补齐** | 能解包常见 Grasshopper Goo，但尚未提供 Rhino `Guid`/`ObjRef` 文档查询兜底；当前应按文档设置 `Point3d` 和 `GeometryBase` Type Hint |
+| 组件0 | **已实现** | `ProtectedPoints`、`DesignVolume` 和 `ContextBuildings` 可自动解析 Goo、`Guid`、`ObjRef`、RhinoObject 和 Rhino Point |
 | 组件1 | **已实现** | `DesignVolume` 可自动解析 Goo、`Guid`、`ObjRef`、RhinoObject、Brep 和 Mesh |
 | 组件2 | **已实现** | `ProtectedPoints`、`Voxels` 和 `ContextBuildings` 已使用相同的引用解析兜底 |
 
-下一项计划是为组件0补齐同等级的几何输入自适应，并验证“设置 Type
-Hint”和“不设置 Type Hint”两种接法得到完全一致的计算结果。详细验收
-条件记录在[开发路线图](docs/ROADMAP.md)。
+三个组件现在共用同一份 `resolve_rhino_geometry`，接法要求一致：Access
+必须按文档设置，几何输入的 Type Hint 则是建议而非必需。
 
-上表描述的是 R8 与 R7 共同的实现状态：R7 版从对应 R8 版逐行回移，
-几何解析兜底一并保留，因此组件0的“待补齐”在两个版本上同样成立。
+无法解析的 `Guid`（引用对象已删除，或 Rhino 文档不可用）会被明确报出：
+`ProtectedPoints` 作为输入错误，两个几何角色作为警告。不会静默当作空输入。
+
+上表同时适用于 R8 和 R7：R7 版从对应 R8 版逐行回移，这份解析逻辑在两个
+版本中逐字一致。
 
 ### R7 与 R8 的差异
 

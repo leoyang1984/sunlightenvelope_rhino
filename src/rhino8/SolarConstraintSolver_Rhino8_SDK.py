@@ -52,6 +52,19 @@ RequiredSunHours   : Item Access, float
 ImpactTolerance    : Item Access, float, hours
 Run                : Item Access, bool
 
+Geometry input adaptation
+-------------------------
+Access must always be set as listed above. The Type Hint on the three
+geometry inputs is a recommendation, not a requirement: ProtectedPoints,
+DesignVolume and ContextBuildings resolve Grasshopper goo, a Rhino document
+Guid, an ObjRef and a RhinoObject on their own, so a direct Rhino object
+reference computes the same result with or without a Type Hint. This matches
+SolarDesignVoxelizer and SolarVoxelOptimizer.
+
+A Guid that cannot be resolved, because the referenced object was deleted or
+the Rhino document is unavailable, is reported explicitly: as an input error
+for ProtectedPoints, and as a warning for the two geometry roles.
+
 Output contract
 ---------------
 SunHours : List[float]
@@ -82,6 +95,7 @@ from datetime import datetime, timedelta
 import Rhino
 import Rhino.Geometry as rg
 import scriptcontext as sc
+import System
 
 import Grasshopper
 from Grasshopper import DataTree
@@ -130,6 +144,61 @@ def unwrap_gh_value(value):
         pass
 
     return value
+
+
+def resolve_rhino_geometry(value):
+    """Resolve GH goo, Rhino document Guid, ObjRef, or RhinoObject geometry."""
+    value = unwrap_gh_value(value)
+
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, System.Guid):
+            document = Rhino.RhinoDoc.ActiveDoc
+
+            if document is None:
+                return value
+
+            rhino_object = document.Objects.FindId(value)
+
+            if rhino_object is not None:
+                return rhino_object.Geometry
+    except Exception:
+        pass
+
+    try:
+        if isinstance(value, Rhino.DocObjects.ObjRef):
+            geometry = value.Geometry()
+
+            if geometry is not None:
+                return geometry
+    except Exception:
+        pass
+
+    try:
+        geometry = value.Geometry
+
+        if isinstance(geometry, rg.GeometryBase):
+            return geometry
+    except Exception:
+        pass
+
+    return value
+
+
+def is_unresolved_guid(value):
+    """
+    Return True when a value is still a raw Guid after geometry resolution.
+
+    A Guid survives resolve_rhino_geometry only when the Rhino document is
+    unavailable or the referenced object no longer exists, so call sites can
+    report that specific cause instead of a generic conversion failure.
+    """
+    try:
+        return isinstance(value, System.Guid)
+    except Exception:
+        return False
 
 
 def is_finite_number(value):
@@ -269,13 +338,24 @@ def validate_inputs(
         )
 
     for index, value in enumerate(point_values):
-        value = unwrap_gh_value(value)
+        value = resolve_rhino_geometry(value)
 
         if value is None:
             errors.append(
                 "ProtectedPoints item {0} is null.".format(index)
             )
             continue
+
+        if is_unresolved_guid(value):
+            errors.append(
+                "ProtectedPoints item {0} is a Rhino object reference that "
+                "could not be resolved. The referenced object may have been "
+                "deleted, or the Rhino document is unavailable.".format(index)
+            )
+            continue
+
+        if isinstance(value, rg.Point):
+            value = value.Location
 
         try:
             point = rg.Point3d(value)
@@ -540,11 +620,22 @@ def build_analysis_mesh(geometry_values, role_name, required):
         return None, errors, warnings, source_mesh_count
 
     for index, geometry in enumerate(geometries):
-        geometry = unwrap_gh_value(geometry)
+        geometry = resolve_rhino_geometry(geometry)
 
         if geometry is None:
             warnings.append(
                 "{0} item {1} is null and was ignored.".format(
+                    role_name,
+                    index
+                )
+            )
+            continue
+
+        if is_unresolved_guid(geometry):
+            warnings.append(
+                "{0} item {1} is a Rhino object reference that could not be "
+                "resolved and was ignored. The referenced object may have "
+                "been deleted, or the Rhino document is unavailable.".format(
                     role_name,
                     index
                 )

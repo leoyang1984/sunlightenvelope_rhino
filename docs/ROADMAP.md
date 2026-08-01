@@ -24,13 +24,13 @@
 
 ### 组件0：日照计算
 
-- Rhino 8 Python 3 SDK-Mode。
+- Rhino 8 Python 3 SDK-Mode，另有 Rhino 7 IronPython 2.7 版。
 - 累计直射日照。
 - 最小连续日照段门槛。
 - Context-only 与 Context + Design 双场景比较。
 - 输出日照时长、受影响点、违规数据和设计遮挡事件。
-- 已支持 Grasshopper Goo 解包。
-- 尚未支持无 Type Hint 时的 Rhino `Guid`/`ObjRef` 自动查询。
+- 已支持 Goo、Rhino `Guid`、`ObjRef`、RhinoObject 和 Rhino Point 解析。
+- 无法解析的 `Guid` 会明确报错或告警，不静默当作空输入。
 
 ### 组件1：切像素块
 
@@ -115,27 +115,39 @@ R7 实机验收的判据是与 R8 结果一致：用同一组输入运行组件1
    `[2.85, 2.45, 2.00]`。
 5. 保存完整 Report，完成本轮端到端验收记录。
 
-### P0：补齐组件0几何接口自适应
+### P0：补齐组件0几何接口自适应（代码已完成，待上机验收）
 
 目标：组件0在保持现有17个输入和4个输出不变的前提下，达到与组件1、
 组件2一致的几何引用兼容性。
 
 实施项：
 
-1. 增加统一的 `resolve_rhino_geometry`。
+1. 增加统一的 `resolve_rhino_geometry`。**已完成**，与组件1、组件2
+   的实现逐字一致。
 2. `ProtectedPoints` 自动处理 `Guid`、`ObjRef`、Rhino Point 和 Point3d。
+   **已完成**，Rhino `Point` 取 `Location` 后再转 `Point3d`。
 3. `DesignVolume`、`ContextBuildings` 自动处理 `Guid`、`ObjRef`、
-   RhinoObject、Brep、Mesh、Extrusion、Surface 和 SubD。
-4. 无效或失效 Guid 输出明确的输入错误或警告。
-5. 不改变太阳计算、连续时长、射线判断和输出数据结构。
+   RhinoObject、Brep、Mesh、Extrusion、Surface 和 SubD。**已完成**，
+   两个角色共用 `build_analysis_mesh`，一处改动同时覆盖。
+   R7 版仍按既定约定忽略 SubD 并告警。
+4. 无效或失效 Guid 输出明确的输入错误或警告。**已完成**，新增
+   `is_unresolved_guid`：`ProtectedPoints` 报输入错误，两个几何角色
+   报警告。
+5. 不改变太阳计算、连续时长、射线判断和输出数据结构。**已确认**，
+   改动只落在输入解析层，逐行 diff 复核无其他变更。
 
-验收条件：
+R8 与 R7 同步完成，两个版本的解析逻辑逐字一致。
+
+验收条件（**待上机**）：
 
 - Type Hint 正确设置时，现有测试结果保持不变。
 - Type Hint 设为 No Type Hint 时，Rhino 引用点和引用实体仍可计算。
 - 两种接口设置的 `SunHours`、`ViolationData` 和 `ConstraintData` 一致。
 - Context 为空时仍按无遮挡基准处理。
+- 失效 Guid（先引用再删除对象）应出现明确报错或告警，而不是被当作
+  空输入静默跳过。
 - 自动化核心测试和 Rhino 8 上机冒烟测试均通过。
+- Rhino 7 侧重复同一组验收。
 
 ### P1：三个组件的接口兼容性回归矩阵
 

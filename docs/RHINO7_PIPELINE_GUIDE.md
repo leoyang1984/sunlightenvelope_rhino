@@ -43,6 +43,13 @@ R7 没有 SDK-Mode，端口不会由方法签名自动同步。**必须先建好
 
 ## 3. 端口配置
 
+**Access 必须按表设置，Type Hint 是建议而非必需。** 三个组件的几何输入
+都能自动解析 Grasshopper Goo、Rhino 文档 `Guid`、`ObjRef`、RhinoObject
+和 Rhino `Point`，所以直接引用 Rhino 对象时，设不设 Type Hint 结果一致。
+
+Access 设错则不行。`List` 误设为 `Item` 是最常见的接线错误，组件只会
+拿到第一项，报告里的数量会明显偏小。
+
 ### 组件1 SolarDesignVoxelizer
 
 | 输入 | Access | Type Hint |
@@ -181,6 +188,13 @@ R7 管线不处理 SubD，遇到时安全跳过并在 `Report` 中输出警告�
 或闭合 Mesh 再连接。
 
 如果发现结果比预期少了体量，先查 `Report` 里有没有 SubD 警告。
+
+### 失效的对象引用会被报出来
+
+从 Rhino 文档引用几何后又把对象删掉，组件不会静默当作空输入，而是明确
+报出：`ProtectedPoints` 作为输入错误，`DesignVolume` 和
+`ContextBuildings` 作为警告。看到 `could not be resolved` 字样时，检查
+Rhino 里对应的对象是否还在。
 
 ### 画布组件不会自动更新
 

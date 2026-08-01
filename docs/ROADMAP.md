@@ -63,6 +63,27 @@ Grasshopper Python组件不会自动跟随仓库脚本更新。发生类型或�
 必须先确认画布组件已经完整替换为最新脚本；端口名称正确不代表内部代码
 是最新版本。
 
+## Grasshopper User Object 打包
+
+三个组件的 R7 和 R8 版本都已打包为 `.ghuser`,端口预置,不需要手工创建。
+bundle 由 `tools/build_ghuser_bundles.py` 从脚本和 `tools/ghuser_spec.py`
+生成,构建由 CI 完成,产物是 `sunlight-ghuser-rhino7` 和
+`sunlight-ghuser-rhino8` 两个 Artifact。详见
+[构建 Grasshopper User Object](GHUSER_BUILD.md)。
+
+打包状态:
+
+| 环节 | 状态 |
+|---|---|
+| 六个 bundle 生成与同步校验 | 已通过 |
+| metadata 与 RunScript 签名一致性 | 已通过 |
+| CI 构建两套 `.ghuser` | 已通过 |
+| 在 Rhino 中装载并计算 | **待验收** |
+
+CI 能证明构建成功、产物大小合理,但 `.ghuser` 的内容经 GH_IO 压缩,
+不借助 Grasshopper 无法核对。**首次分发前必须在 Rhino 里装一次**,确认
+端口齐全、能算出与脚本版一致的结果。
+
 ## Rhino 7 分支
 
 三个组件各有一个 IronPython 2.7 版本，供没有 Rhino 8 的协作方使用：

@@ -1,0 +1,239 @@
+{
+  "name": "SolarVoxelOptimizer",
+  "nickname": "Optim",
+  "category": "Sunlight",
+  "subcategory": "Voxel Pipeline (IronPython)",
+  "description": "Component 2. Map every protected point and time sample to the voxels it passes through, then remove voxels top-down with a deterministic greedy heuristic until the sunlight requirement is met.",
+  "exposure": 2,
+  "instanceGuid": "36848a58-bf71-4f14-a2e7-c0dd9aaa9729",
+  "ghpython": {
+    "hideOutput": true,
+    "hideInput": true,
+    "iconDisplay": 0,
+    "inputParameters": [
+      {
+        "name": "ProtectedPoints",
+        "nickname": "P",
+        "description": "Points whose sunlight must be evaluated. Accepts Grasshopper points, a Rhino Guid, an ObjRef, a RhinoObject or a Rhino Point.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "point"
+      },
+      {
+        "name": "Voxels",
+        "nickname": "V",
+        "description": "Voxel geometry from SolarDesignVoxelizer. Connect the output directly; do not sort, cull or dispatch it.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "geometrybase"
+      },
+      {
+        "name": "VoxelIDs",
+        "nickname": "ID",
+        "description": "Voxel IDs from SolarDesignVoxelizer, in the original order.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "int"
+      },
+      {
+        "name": "ColumnIDs",
+        "nickname": "C",
+        "description": "Column IDs from SolarDesignVoxelizer, in the original order.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "int"
+      },
+      {
+        "name": "LayerIDs",
+        "nickname": "L",
+        "description": "Layer IDs from SolarDesignVoxelizer, in the original order.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "int"
+      },
+      {
+        "name": "ContextBuildings",
+        "nickname": "C",
+        "description": "Existing surrounding buildings used as the baseline obstruction. An empty list is a valid unobstructed baseline. Accepts Grasshopper geometry, a Rhino Guid, an ObjRef or a RhinoObject.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "geometrybase"
+      },
+      {
+        "name": "North",
+        "nickname": "N",
+        "description": "Project north direction. The horizontal XY component must not be zero.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "vector"
+      },
+      {
+        "name": "Latitude",
+        "nickname": "Lat",
+        "description": "Site latitude in degrees, -90 to 90.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "Longitude",
+        "nickname": "Lon",
+        "description": "Site longitude in degrees. East is positive, west is negative.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "TimeZone",
+        "nickname": "TZ",
+        "description": "UTC offset in hours. China is 8.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "Year",
+        "nickname": "Y",
+        "description": "Analysis year.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "Month",
+        "nickname": "M",
+        "description": "Analysis month.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "Day",
+        "nickname": "D",
+        "description": "Analysis day.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "StartHour",
+        "nickname": "S",
+        "description": "Local clock hour to start the analysis window, 0 to 24.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "EndHour",
+        "nickname": "E",
+        "description": "Local clock hour to end the analysis window. Must be greater than StartHour.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "TimeStep",
+        "nickname": "TS",
+        "description": "Sampling interval in minutes. Smaller values resolve continuous segments more precisely and cost more time.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "MinimumContinuousMinutes",
+        "nickname": "Min",
+        "description": "Shortest continuous direct-sun run that counts toward the qualified total, in minutes. Zero keeps the raw accumulated hours.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "RequiredSunHours",
+        "nickname": "Req",
+        "description": "Qualified sun hours each baseline-solvable point must reach.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "MaxIterations",
+        "nickname": "It",
+        "description": "Upper bound on greedy removal rounds. Each round removes one action.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "Run",
+        "nickname": "R",
+        "description": "Set to True to calculate. Leave False while wiring the inputs.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "bool"
+      }
+    ],
+    "outputParameters": [
+      {
+        "name": "KeptVoxels",
+        "nickname": "K",
+        "description": "Voxels surviving optimization. Feed these to a second SolarConstraintSolver instance to verify the result independently.",
+        "optional": false
+      },
+      {
+        "name": "RemovedVoxels",
+        "nickname": "Rm",
+        "description": "Voxels removed to satisfy the sunlight requirement.",
+        "optional": false
+      },
+      {
+        "name": "OptimizedColumns",
+        "nickname": "Col",
+        "description": "Kept voxels grouped by column.",
+        "optional": false
+      },
+      {
+        "name": "KeepMask",
+        "nickname": "Msk",
+        "description": "Boolean per input voxel, aligned with the Voxels input order.",
+        "optional": false
+      },
+      {
+        "name": "InitialSunHours",
+        "nickname": "I0",
+        "description": "Qualified sun hours per protected point before any removal.",
+        "optional": false
+      },
+      {
+        "name": "FinalSunHours",
+        "nickname": "H",
+        "description": "Qualified sun hours per protected point after optimization.",
+        "optional": false
+      },
+      {
+        "name": "VoxelImpactHours",
+        "nickname": "Imp",
+        "description": "Hours attributable to each voxel, aligned with the Voxels input order.",
+        "optional": false
+      },
+      {
+        "name": "EventVoxelPaths",
+        "nickname": "Ev",
+        "description": "Branch {i} holds the voxel paths blocking ProtectedPoints[i].",
+        "optional": false
+      },
+      {
+        "name": "IterationData",
+        "nickname": "It",
+        "description": "One record per greedy round: the action taken, its cost and its gain.",
+        "optional": false
+      },
+      {
+        "name": "Report",
+        "nickname": "Rp",
+        "description": "Status, inputs, statistics, warnings and errors. Connect a Panel and read this first after every run.",
+        "optional": false
+      }
+    ],
+    "isAdvancedMode": true
+  }
+}

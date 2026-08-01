@@ -1,0 +1,98 @@
+{
+  "name": "SolarDesignVoxelizer",
+  "nickname": "Voxel",
+  "category": "Sunlight",
+  "subcategory": "Voxel Pipeline",
+  "description": "Component 1. Split a closed DesignVolume into numbered, traceable, boundary-clipped column voxels. Outputs feed SolarVoxelOptimizer unchanged.",
+  "exposure": 2,
+  "instanceGuid": "b877ea64-7e9f-40d8-bf57-2559b680e316",
+  "ghpython": {
+    "hideOutput": true,
+    "hideInput": true,
+    "iconDisplay": 0,
+    "inputParameters": [
+      {
+        "name": "DesignVolume",
+        "nickname": "V",
+        "description": "One or more valid closed solids to voxelize. Accepts Grasshopper geometry, a Rhino Guid, an ObjRef or a RhinoObject.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "geometrybase"
+      },
+      {
+        "name": "VoxelSizeXY",
+        "nickname": "XY",
+        "description": "Voxel edge length on the world X and Y axes, in model units. In a millimetre file 3000 means 3 metres.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "VoxelSizeZ",
+        "nickname": "Z",
+        "description": "Voxel layer height on the world Z axis, in model units.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "Run",
+        "nickname": "R",
+        "description": "Set to True to calculate. Leave False while wiring the inputs.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "bool"
+      }
+    ],
+    "outputParameters": [
+      {
+        "name": "Voxels",
+        "nickname": "V",
+        "description": "Flat list of voxel geometry. Fully contained cells are boxes; boundary cells are clipped to DesignVolume.",
+        "optional": false
+      },
+      {
+        "name": "VoxelIDs",
+        "nickname": "ID",
+        "description": "Flat list of voxel IDs, aligned item by item with Voxels.",
+        "optional": false
+      },
+      {
+        "name": "ColumnIDs",
+        "nickname": "C",
+        "description": "Flat list of column IDs grouping voxels by world XY grid location.",
+        "optional": false
+      },
+      {
+        "name": "LayerIDs",
+        "nickname": "L",
+        "description": "Flat list of global world-Z layer indices. May contain gaps when the input does.",
+        "optional": false
+      },
+      {
+        "name": "VoxelCenters",
+        "nickname": "Ctr",
+        "description": "Flat list of voxel centres. Clipped cells report their true centroid.",
+        "optional": false
+      },
+      {
+        "name": "VoxelVolumes",
+        "nickname": "Vol",
+        "description": "Flat list of true solid volumes in cubic model units.",
+        "optional": false
+      },
+      {
+        "name": "VoxelTree",
+        "nickname": "T",
+        "description": "Branch {c} holds the voxels of ColumnID c, ordered bottom to top.",
+        "optional": false
+      },
+      {
+        "name": "Report",
+        "nickname": "Rp",
+        "description": "Status, inputs, statistics, warnings and errors. Connect a Panel and read this first after every run.",
+        "optional": false
+      }
+    ]
+  }
+}

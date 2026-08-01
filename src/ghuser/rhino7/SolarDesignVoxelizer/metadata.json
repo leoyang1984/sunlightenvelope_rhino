@@ -2,20 +2,19 @@
   "name": "SolarDesignVoxelizer",
   "nickname": "Voxel",
   "category": "Sunlight",
-  "subcategory": "Voxel Pipeline",
+  "subcategory": "Voxel Pipeline (IronPython)",
   "description": "Component 1. Split a closed DesignVolume into numbered, traceable, boundary-clipped column voxels. Outputs feed SolarVoxelOptimizer unchanged.",
   "exposure": 2,
   "instanceGuid": "9d690892-fe5b-4c95-9cf2-ddb6fff912e9",
   "ghpython": {
     "hideOutput": true,
     "hideInput": true,
-    "isAdvancedMode": true,
     "iconDisplay": 0,
     "inputParameters": [
       {
         "name": "DesignVolume",
         "nickname": "V",
-        "description": "One or more valid closed solids to voxelize. Accepts Grasshopper geometry, a Rhino document Guid, an ObjRef or a RhinoObject. SubD is ignored with a warning in Rhino 7; convert it to a Brep or closed Mesh first.",
+        "description": "One or more valid closed solids to voxelize. Accepts Grasshopper geometry, a Rhino Guid, an ObjRef or a RhinoObject.",
         "optional": true,
         "scriptParamAccess": "list",
         "typeHintID": "geometrybase"
@@ -39,7 +38,7 @@
       {
         "name": "Run",
         "nickname": "R",
-        "description": "Set to True to voxelize. Leave False while wiring the inputs.",
+        "description": "Set to True to calculate. Leave False while wiring the inputs.",
         "optional": true,
         "scriptParamAccess": "item",
         "typeHintID": "bool"
@@ -90,10 +89,11 @@
       },
       {
         "name": "Report",
-        "nickname": "R",
-        "description": "Status, grid statistics, Boolean failure counts, warnings and errors.",
+        "nickname": "Rp",
+        "description": "Status, inputs, statistics, warnings and errors. Connect a Panel and read this first after every run.",
         "optional": false
       }
-    ]
+    ],
+    "isAdvancedMode": true
   }
 }

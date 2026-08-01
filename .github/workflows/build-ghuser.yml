@@ -1,8 +1,13 @@
 name: Build User Objects
 
-# Builds the .ghuser components so nobody needs a local IronPython or
-# GH_IO.dll. Download the result from the run's Artifacts, or from the
-# Release assets when a tag is pushed.
+# Builds both component sets so nobody needs a local IronPython or GH_IO.dll.
+# Download them from the run's Artifacts, or from the Release assets when a
+# tag is pushed.
+#
+#   sunlight-ghuser-rhino7  IronPython 2.7 components for Rhino 7
+#   sunlight-ghuser-rhino8  Python 3 components for Rhino 8
+#
+# Install only the set matching your Rhino version.
 
 on:
   push:
@@ -10,6 +15,7 @@ on:
     paths:
       - "src/ghuser/**"
       - "src/rhino7/**"
+      - "src/rhino8/**"
       - "tools/**"
       - ".github/workflows/build-ghuser.yml"
     tags:
@@ -18,6 +24,7 @@ on:
     paths:
       - "src/ghuser/**"
       - "src/rhino7/**"
+      - "src/rhino8/**"
       - "tools/**"
   workflow_dispatch:
 
@@ -32,47 +39,60 @@ jobs:
         with:
           python-version: "3.11"
 
-      # code.py is derived from src/rhino7. Fail loudly if someone edited the
-      # Rhino 7 script without regenerating, so the User Object can never ship
-      # an algorithm the project did not verify.
-      - name: Check generated code.py is in sync
-        run: python3 tools/build_ghuser_code.py --check
+      # The bundles are generated from src/rhino7, src/rhino8 and
+      # tools/ghuser_spec.py. Fail loudly if someone edited a script or a port
+      # without regenerating, so a User Object can never ship an algorithm or
+      # a port list the project did not verify.
+      - name: Check generated bundles are in sync
+        run: python3 tools/build_ghuser_bundles.py --check
 
-      # Catches what the componentizer would either reject, or accept and
-      # then fail on at run time inside Grasshopper.
+      # Catches what the componentizer would either reject, or accept and then
+      # fail on at run time inside Grasshopper.
       - name: Validate bundle metadata
         run: python3 tools/check_ghuser_bundle.py
 
   build:
-    name: Build .ghuser
+    name: Build ${{ matrix.flavour }}
     needs: validate
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavour: rhino7
+            interpreter: ironpython
+          - flavour: rhino8
+            interpreter: cpython
     steps:
       - uses: actions/checkout@v4
 
       # 2.7.8.1 is the version the componentizer documents. 2.7.9 and 2.7.11
-      # are known to misbehave against the Rhino 6 SDK the build targets.
+      # are known to misbehave against the Rhino 6 SDK the IronPython build
+      # targets. The cpython flavour ignores this but installing it is
+      # harmless and keeps the matrix uniform.
       - name: Install IronPython
+        if: matrix.interpreter == 'ironpython'
         run: choco install ironpython --version=2.7.8.1 -y
 
       - name: Componentize
         uses: compas-dev/compas-actions.ghpython_components@v5
         with:
-          source: src/ghuser/components
-          target: dist/ghuser
+          source: src/ghuser/${{ matrix.flavour }}
+          target: dist/ghuser/${{ matrix.flavour }}
+          interpreter: ${{ matrix.interpreter }}
 
       - name: List build output
         shell: pwsh
-        run: Get-ChildItem -Recurse dist/ghuser
+        run: Get-ChildItem -Recurse dist/ghuser/${{ matrix.flavour }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sunlight-ghuser-components
-          path: dist/ghuser
+          name: sunlight-ghuser-${{ matrix.flavour }}
+          path: dist/ghuser/${{ matrix.flavour }}
           if-no-files-found: error
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ghuser/*.ghuser
+          files: dist/ghuser/${{ matrix.flavour }}/*.ghuser

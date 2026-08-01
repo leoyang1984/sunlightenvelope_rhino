@@ -26,12 +26,12 @@ import sys
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-COMPONENTS_ROOT = os.path.join(REPO_ROOT, "src", "ghuser", "components")
+COMPONENTS_ROOT = os.path.join(REPO_ROOT, "src", "ghuser")
 
 VALID_TYPE_HINTS = set(
     """none ghdoc float bool int complex str datetime guid color point vector
     plane interval uvinterval box transform line circle arc polyline rectangle
-    curve mesh surface subd brep geometrybase""".split()
+    curve mesh surface subd brep pointcloud geometrybase""".split()
 )
 
 VALID_ACCESS = set(["item", "list", "tree", 0, 1, 2])
@@ -59,32 +59,52 @@ def png_size(path):
 
 
 def runscript_params(code_path):
-    """Return the RunScript parameter names declared in code.py."""
+    """
+    Return the RunScript parameter names declared in code.py.
+
+    Handles both flavours: the Rhino 7 wrapper takes bare names, the Rhino 8
+    SDK scripts annotate each one, so any annotation is stripped.
+    """
     with io.open(code_path, encoding="utf-8") as handle:
         source = handle.read()
 
-    match = re.search(r"def RunScript\(self,(.*?)\):", source, re.DOTALL)
+    match = re.search(r"def RunScript\(\s*self,(.*?)\):", source, re.DOTALL)
 
     if not match:
         return None
 
-    raw = match.group(1)
-    return [name.strip() for name in raw.split(",") if name.strip()]
+    names = []
+
+    for chunk in match.group(1).split(","):
+        chunk = chunk.strip()
+
+        if not chunk:
+            continue
+
+        names.append(chunk.split(":")[0].strip())
+
+    return names
 
 
 def check_bundle(directory, problems):
-    name = os.path.basename(directory)
+    # Keyed by the flavour-qualified path: the same component name exists in
+    # both the rhino7 and rhino8 trees.
+    label = os.path.relpath(directory, COMPONENTS_ROOT)
 
     def fail(message):
-        problems.append("{0}: {1}".format(name, message))
+        problems.append((label, message))
 
     icon = os.path.join(directory, "icon.png")
     code = os.path.join(directory, "code.py")
     meta = os.path.join(directory, "metadata.json")
 
-    for path, label in ((icon, "icon.png"), (code, "code.py"), (meta, "metadata.json")):
+    for path, filename in (
+        (icon, "icon.png"),
+        (code, "code.py"),
+        (meta, "metadata.json"),
+    ):
         if not os.path.exists(path):
-            fail("missing {0}".format(label))
+            fail("missing {0}".format(filename))
             return
 
     size = png_size(icon)
@@ -185,21 +205,39 @@ def check_bundle(directory, problems):
 
         seen_out.add(parameter_name)
 
-    # The port names are the component's contract. If code.py and metadata.json
-    # disagree, the build succeeds and the component fails at run time.
-    if ghpython.get("isAdvancedMode"):
-        declared = runscript_params(code)
+    # The port names are the component's contract. If code.py and
+    # metadata.json disagree, the build succeeds and the component fails at
+    # run time. Both flavours expose a RunScript, so both get checked: the
+    # Rhino 7 wrapper class and the Rhino 8 Script_Instance.
+    declared = runscript_params(code)
 
-        if declared is None:
-            fail("isAdvancedMode is true but code.py has no RunScript(self, ...)")
-        else:
-            expected = [parameter.get("name") for parameter in inputs]
+    if declared is None:
+        if ghpython.get("isAdvancedMode"):
+            fail(
+                "isAdvancedMode is true but code.py has no "
+                "RunScript(self, ...)"
+            )
+    else:
+        expected = [parameter.get("name") for parameter in inputs]
 
-            if declared != expected:
-                fail(
-                    "RunScript signature {0} does not match "
-                    "inputParameters {1}".format(declared, expected)
-                )
+        if declared != expected:
+            fail(
+                "RunScript signature {0} does not match "
+                "inputParameters {1}".format(declared, expected)
+            )
+
+
+def find_bundles():
+    """Return every directory holding a metadata.json, at any depth."""
+    found = []
+
+    for current, directories, files in os.walk(COMPONENTS_ROOT):
+        directories.sort()
+
+        if "metadata.json" in files:
+            found.append(current)
+
+    return sorted(found)
 
 
 def main():
@@ -207,11 +245,7 @@ def main():
         print("No component bundles found at {0}".format(COMPONENTS_ROOT))
         return 1
 
-    directories = sorted(
-        os.path.join(COMPONENTS_ROOT, entry)
-        for entry in os.listdir(COMPONENTS_ROOT)
-        if os.path.isdir(os.path.join(COMPONENTS_ROOT, entry))
-    )
+    directories = find_bundles()
 
     if not directories:
         print("No component bundles found at {0}".format(COMPONENTS_ROOT))
@@ -223,15 +257,15 @@ def main():
         check_bundle(directory, problems)
 
     for directory in directories:
-        name = os.path.basename(directory)
-        related = [p for p in problems if p.startswith(name + ":")]
+        label = os.path.relpath(directory, COMPONENTS_ROOT)
+        related = [message for key, message in problems if key == label]
 
         if related:
-            print("FAIL  {0}".format(name))
-            for problem in related:
-                print("      {0}".format(problem.split(": ", 1)[1]))
+            print("FAIL  {0}".format(label))
+            for message in related:
+                print("      {0}".format(message))
         else:
-            print("OK    {0}".format(name))
+            print("OK    {0}".format(label))
 
     return 1 if problems else 0
 

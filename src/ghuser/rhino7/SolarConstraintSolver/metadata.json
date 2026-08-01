@@ -1,0 +1,179 @@
+{
+  "name": "SolarConstraintSolver",
+  "nickname": "Solve",
+  "category": "Sunlight",
+  "subcategory": "Voxel Pipeline (IronPython)",
+  "description": "Component 0. Evaluate direct sun at protected points with Context only and with Context plus Design, and report affected points and violations. Place two instances: one for the original DesignVolume, one to independently verify the optimized result.",
+  "exposure": 2,
+  "instanceGuid": "28472408-7da8-4d3f-87bc-c05649308285",
+  "ghpython": {
+    "hideOutput": true,
+    "hideInput": true,
+    "iconDisplay": 0,
+    "inputParameters": [
+      {
+        "name": "ProtectedPoints",
+        "nickname": "P",
+        "description": "Points whose sunlight must be evaluated. Accepts Grasshopper points, a Rhino Guid, an ObjRef, a RhinoObject or a Rhino Point.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "point"
+      },
+      {
+        "name": "DesignVolume",
+        "nickname": "V",
+        "description": "The proposed design volume evaluated as a separate obstruction role from ContextBuildings. Connect KeptVoxels here for the post-optimization verification instance.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "geometrybase"
+      },
+      {
+        "name": "ContextBuildings",
+        "nickname": "C",
+        "description": "Existing surrounding buildings used as the baseline obstruction. An empty list is a valid unobstructed baseline. Accepts Grasshopper geometry, a Rhino Guid, an ObjRef or a RhinoObject.",
+        "optional": true,
+        "scriptParamAccess": "list",
+        "typeHintID": "geometrybase"
+      },
+      {
+        "name": "North",
+        "nickname": "N",
+        "description": "Project north direction. The horizontal XY component must not be zero.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "vector"
+      },
+      {
+        "name": "Latitude",
+        "nickname": "Lat",
+        "description": "Site latitude in degrees, -90 to 90.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "Longitude",
+        "nickname": "Lon",
+        "description": "Site longitude in degrees. East is positive, west is negative.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "TimeZone",
+        "nickname": "TZ",
+        "description": "UTC offset in hours. China is 8.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "Year",
+        "nickname": "Y",
+        "description": "Analysis year.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "Month",
+        "nickname": "M",
+        "description": "Analysis month.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "Day",
+        "nickname": "D",
+        "description": "Analysis day.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "int"
+      },
+      {
+        "name": "StartHour",
+        "nickname": "S",
+        "description": "Local clock hour to start the analysis window, 0 to 24.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "EndHour",
+        "nickname": "E",
+        "description": "Local clock hour to end the analysis window. Must be greater than StartHour.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "TimeStep",
+        "nickname": "TS",
+        "description": "Sampling interval in minutes. Smaller values resolve continuous segments more precisely and cost more time.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "MinimumContinuousMinutes",
+        "nickname": "Min",
+        "description": "Shortest continuous direct-sun run that counts toward the qualified total, in minutes. Zero keeps the raw accumulated hours.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "RequiredSunHours",
+        "nickname": "Req",
+        "description": "Qualified sun hours a point must reach. No regulation value is hard-coded.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "ImpactTolerance",
+        "nickname": "Tol",
+        "description": "Lost hours above this value mark a point as affected by the design.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "float"
+      },
+      {
+        "name": "Run",
+        "nickname": "R",
+        "description": "Set to True to calculate. Leave False while wiring the inputs.",
+        "optional": true,
+        "scriptParamAccess": "item",
+        "typeHintID": "bool"
+      }
+    ],
+    "outputParameters": [
+      {
+        "name": "SunHours",
+        "nickname": "H",
+        "description": "Final qualified direct-sun hours, one per ProtectedPoints item in the same order.",
+        "optional": false
+      },
+      {
+        "name": "ViolationData",
+        "nickname": "V",
+        "description": "One record per affected or violating point, distinguishing existing-context violations from design-caused impact.",
+        "optional": false
+      },
+      {
+        "name": "ConstraintData",
+        "nickname": "C",
+        "description": "Branch {i} holds the design-blocking events of ProtectedPoints[i]. Events are emitted only where Context is clear and the design blocks the sun.",
+        "optional": false
+      },
+      {
+        "name": "Report",
+        "nickname": "Rp",
+        "description": "Status, inputs, statistics, warnings and errors. Connect a Panel and read this first after every run.",
+        "optional": false
+      }
+    ],
+    "isAdvancedMode": true
+  }
+}

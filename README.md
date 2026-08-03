@@ -5,12 +5,15 @@
 管线组件有 Rhino 8 和 Rhino 7 两套实现，并已打包为 Grasshopper User
 Object，端口预置，拖出来即可接线。
 
+> **给 AI 助手**：本仓库的入口是 [AGENTS.md](AGENTS.md)，安装、使用和改代码的
+> 约束都在那里。一键安装并自检：`python3 tools/install_skill.py`
+
 ## 我该从哪里开始
 
 | 你的情况 | 看这里 |
 |---|---|
 | **不想装 Rhino，只想从 CAD 图纸算** | [Headless 引擎](docs/HEADLESS_ENGINE.md) |
-| **想让 AI 助手替你跑** | [Agent Skill 安装](skills/README.md) |
+| **想让 AI 助手替你跑** | [Agent Skill 安装](skills/README.md)（或让 AI 读 [AGENTS.md](AGENTS.md) 自己装） |
 | **第一次用，想完整跑一遍** | [完整教程](docs/TUTORIAL.md) |
 | 已经熟悉，只要装一下 | [安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md) |
 | 想用五个日照采样脚本 | [快速开始](docs/QUICK_START.md) |
@@ -40,6 +43,7 @@ SunlightEnvelope_Rhino8/
 │   └── headless/      纯 Python 引擎，不需要 Rhino（cadsolar 包 + CLI）
 ├── dist/ghuser/       构建好的 .ghuser，可直接下载安装
 ├── tools/             bundle 生成与校验脚本
+├── AGENTS.md          AI 助手入口：安装、使用与改动约束
 ├── skills/            给 AI 编程助手用的技能包
 ├── docs/              使用、上海参数与验收文档
 └── examples/          Rhino 8 测试模型

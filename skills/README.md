@@ -9,7 +9,19 @@
 
 ## 安装
 
-### Claude Code
+### 一键（推荐，含自检）
+
+```bash
+python3 tools/install_skill.py
+```
+
+幂等，可重复跑。会检查 Python 与 `ezdxf`、安装 skill，并**用内置参考场景跑一遍
+与已核对的基准比对**——文件复制成功不等于能用。加 `--check` 只诊断不写文件，
+加 `--link` 用软链跟仓库同步，加 `--with-deps` 顺带装 `ezdxf`。
+
+AI 助手请读 [AGENTS.md](../AGENTS.md)。
+
+### 手动
 
 复制到用户级 skills 目录：
 

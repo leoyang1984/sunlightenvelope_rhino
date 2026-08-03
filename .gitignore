@@ -13,3 +13,7 @@ temp/
 # dist/ is build scratch.
 dist/*
 !dist/ghuser/
+
+# Claude Code local state (worktrees and machine-local settings)
+.claude/worktrees/
+.claude/settings.local.json

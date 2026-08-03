@@ -9,6 +9,7 @@ Object，端口预置，拖出来即可接线。
 
 | 你的情况 | 看这里 |
 |---|---|
+| **不想装 Rhino，只想从 CAD 图纸算** | [Headless 引擎](docs/HEADLESS_ENGINE.md) |
 | **第一次用，想完整跑一遍** | [完整教程](docs/TUTORIAL.md) |
 | 已经熟悉，只要装一下 | [安装与使用 Grasshopper 组件](docs/GHUSER_INSTALL.md) |
 | 想用五个日照采样脚本 | [快速开始](docs/QUICK_START.md) |
@@ -34,7 +35,8 @@ SunlightEnvelope_Rhino8/
 ├── src/
 │   ├── rhino8/        Rhino 8 Python 3 脚本
 │   ├── rhino7/        Rhino 7 IronPython 2.7 脚本
-│   └── ghuser/        User Object 源 bundle（生成物，勿手改）
+│   ├── ghuser/        User Object 源 bundle（生成物，勿手改）
+│   └── headless/      纯 Python 引擎，不需要 Rhino（cadsolar 包 + CLI）
 ├── dist/ghuser/       构建好的 .ghuser，可直接下载安装
 ├── tools/             bundle 生成与校验脚本
 ├── docs/              使用、上海参数与验收文档

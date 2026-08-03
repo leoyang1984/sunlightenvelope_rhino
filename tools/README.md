@@ -15,6 +15,9 @@ CI 完成,见[构建 Grasshopper User Object](../docs/GHUSER_BUILD.md)。
 | `check_ghuser_bundle.py` | 校验 bundle 是否符合 componentizer 的要求 |
 | `make_icons.py` | 生成 `tools/icons/` 下的 24×24 组件图标,需要 Pillow |
 | `stamp_ghuser_release.py` | 给 `dist/ghuser/` 里提交的成品打戳并校验是否过期 |
+| `sanitize_3dm.py` | 重建 `.3dm`，丢掉渲染环境等会嵌入本机绝对路径的内容。提交 Rhino 文件到公开仓库前跑一次 |
+| `crosscheck_rhino.py` | 经 rhinocode 驱动真组件，与 headless 引擎做数值对照 |
+| `bench_headless.py` | headless 引擎的性能与包围盒粗筛等价性 |
 
 ## 数据流
 

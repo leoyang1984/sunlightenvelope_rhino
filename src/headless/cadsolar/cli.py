@@ -16,7 +16,7 @@ import json
 import pathlib
 import sys
 
-from . import dxfio, scene_spec
+from . import dxfio, report, scene_spec
 from .cities import known_cities, lookup_city, lookup_day
 from .pipeline import Settings, bearing_to_north_angle, run
 
@@ -239,6 +239,15 @@ def command_analyze(args):
         out_dir / "carved.obj", result["kept"], scene.protected_points
     )
 
+    html_path = None
+
+    if not args.no_html:
+        html_path = str(out_dir / "report.html")
+        pathlib.Path(html_path).write_text(
+            report.render(scene, settings, result, title=args.title),
+            encoding="utf-8",
+        )
+
     points = []
 
     for index in range(len(scene.protected_points)):
@@ -298,7 +307,7 @@ def command_analyze(args):
         "all_points_meet_requirement": all(
             p["meets_requirement"] for p in points
         ),
-        "outputs": {"dxf": dxf_path, "obj": obj_path},
+        "outputs": {"dxf": dxf_path, "obj": obj_path, "html": html_path},
         "timing_seconds": {
             key: round(value, 4)
             for key, value in result["timing"].items()
@@ -341,6 +350,9 @@ def command_analyze(args):
         eprint("输出      {0}".format(dxf_path))
         eprint("          {0}".format(obj_path))
 
+        if html_path:
+            eprint("          {0}  ← 双击打开，可旋转查看".format(html_path))
+
     return 0 if verified else 1
 
 
@@ -373,6 +385,10 @@ def build_parser():
     analyze = subparsers.add_parser("analyze", help="跑完整的体素化 + 切削 + 复核")
     add_input(analyze)
     analyze.add_argument("--out", default="./cadsolar-out", help="输出目录")
+    analyze.add_argument("--title", default="日照约束体量切削",
+                         help="报告标题，通常写项目名")
+    analyze.add_argument("--no-html", action="store_true",
+                         help="不生成 report.html")
     analyze.add_argument("--city", help="城市预设，如 上海 / 北京")
     analyze.add_argument("--day", dest="day_preset",
                          help="分析日预设：大寒 / 冬至 / 春分 / 夏至")

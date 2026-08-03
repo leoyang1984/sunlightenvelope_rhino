@@ -136,6 +136,19 @@ python3 tools/crosscheck_rhino.py                 # 需经 rhinocode 在 Rhino �
 
 ---
 
+## 报告
+
+`analyze` 每次都会写一份 `report.html`：单文件、零外部依赖、不需要服务器，
+双击就开，可以直接转发。内容是可拖拽旋转的轴测视图（保留体量 / 切除体量 /
+周边建筑 / 保护点，六个预设视角，可导出 PNG）加上逐点日照、计算参数、体素统计
+和适用边界声明。
+
+视图用**正轴测**而不是透视——建筑读体量靠的是轴测，平行投影也让不同位置的高度
+可比。体素是凸的且互不相交，所以按面深度排序加背面剔除就足够正确，不需要
+z-buffer，也就不需要任何三维库。取景框的是体量本身，周边建筑允许出画。
+
+`--title "项目名"` 指定标题，`--no-html` 关掉。
+
 ## 与 Rhino 8 的数值对照（已完成）
 
 `rhino/drive_components.py` 通过 `rhinocode` 把**真的 Rhino 组件**跑在同一个场景上——
@@ -251,6 +264,7 @@ src/headless/cadsolar/scene_spec.py  JSON 场景描述 → Scene（无需 CAD）
 src/headless/cadsolar/cities.py      城市坐标与分析日预设
 src/headless/cadsolar/kernel.py      从 src/rhino8/ 抽取真算法并注入几何原语
 src/headless/cadsolar/pipeline.py    组件1（新写）+ 组件2、组件0（原样调用）
+src/headless/cadsolar/report.py      自包含 HTML 报告（轴测视图 + 数据）
 src/headless/cadsolar/cli.py         命令行接口
 src/headless/make_reference_scene.py 生成参考场景
 src/headless/scene/reference.dxf     参考场景（两个引擎的共同基准）

@@ -20,6 +20,10 @@ python3 -m cadsolar analyze  --dxf src/headless/scene/reference.dxf \
     --city 上海 --day 大寒 --out ./result --json
 ```
 
+北向不是正北时用 `--north-bearing`，收的是口语里那个角，**自正北起顺时针为正**：
+北偏东 15 度写 `15`，北偏西 15 度写 `-15`。另有底层的 `--north-angle` 逆时针为正，
+符号相反，两者只能给一个。
+
 `analyze` 接受 `--dxf`（按块命名约定绘制）或 `--scene`（JSON 描述，不需要 CAD）。
 `--json` 把结构化结果打到 stdout，人类可读表格走 stderr。退出码 0 表示独立复核通过。
 

@@ -6,6 +6,7 @@ not: the agent will confidently report sun hours for a building that is not
 the one the architect drew. Every case here must raise, not warn.
 """
 
+import math
 import pathlib
 import sys
 import tempfile
@@ -209,3 +210,71 @@ class DrawingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class NorthDirectionTests(unittest.TestCase):
+    """The sign convention that silently ruins a run if it is wrong."""
+
+    def _bearing_of(self, bearing):
+        from cadsolar.pipeline import bearing_to_north_angle, north_east_vectors
+        north, _ = north_east_vectors(bearing_to_north_angle(bearing))
+        return (math.degrees(math.atan2(north[0], north[1])) + 360.0) % 360.0
+
+    def test_due_north(self):
+        self.assertAlmostEqual(self._bearing_of(0), 0.0, places=9)
+
+    def test_north_by_east_swings_east(self):
+        """北偏东 15 度 -> 方位角 15，不是 345。"""
+        self.assertAlmostEqual(self._bearing_of(15), 15.0, places=6)
+
+    def test_north_by_west_swings_west(self):
+        self.assertAlmostEqual(self._bearing_of(-15), 345.0, places=6)
+
+    def test_quarter_turn(self):
+        self.assertAlmostEqual(self._bearing_of(90), 90.0, places=6)
+
+    def test_east_vector_stays_perpendicular(self):
+        from cadsolar.pipeline import bearing_to_north_angle, north_east_vectors
+
+        for bearing in (0, 15, -40, 90, 180):
+            north, east = north_east_vectors(bearing_to_north_angle(bearing))
+            dot = sum(a * b for a, b in zip(north, east))
+            self.assertAlmostEqual(dot, 0.0, places=9, msg=str(bearing))
+            self.assertAlmostEqual(
+                math.hypot(north[0], north[1]), 1.0, places=9)
+
+
+class CityTableTests(unittest.TestCase):
+
+    def test_chinese_and_pinyin_agree(self):
+        from cadsolar.cities import lookup_city
+        for chinese, pinyin in [("上海", "shanghai"), ("宁波", "ningbo"),
+                                ("乌鲁木齐", "urumqi")]:
+            self.assertEqual(lookup_city(chinese), lookup_city(pinyin), chinese)
+
+    def test_shanghai_matches_the_official_profile(self):
+        from cadsolar.cities import lookup_city
+        latitude, longitude, timezone = lookup_city("上海")
+        self.assertAlmostEqual(latitude, 31.233333, places=6)
+        self.assertAlmostEqual(longitude, 121.466667, places=6)
+        self.assertEqual(timezone, 8.0)
+
+    def test_unknown_city_returns_none(self):
+        from cadsolar.cities import lookup_city
+        self.assertIsNone(lookup_city("瓦坎达"))
+        self.assertIsNone(lookup_city(""))
+
+    def test_coordinates_are_plausible(self):
+        from cadsolar.cities import CITIES
+        for name, (latitude, longitude, timezone) in CITIES.items():
+            self.assertTrue(3.0 < latitude < 54.0, name)
+            self.assertTrue(73.0 < longitude < 136.0, name)
+            self.assertEqual(timezone, 8.0, name)
+
+    def test_day_presets(self):
+        from cadsolar.cities import lookup_day
+        month, day, start, end, _ = lookup_day("大寒")
+        self.assertEqual((month, day), (1, 20))
+        self.assertLess(start, end)
+        self.assertEqual(lookup_day("大寒"), lookup_day("dahan"))
+        self.assertIsNone(lookup_day("小雪"))

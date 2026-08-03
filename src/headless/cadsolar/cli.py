@@ -18,7 +18,7 @@ import sys
 
 from . import dxfio, scene_spec
 from .cities import known_cities, lookup_city, lookup_day
-from .pipeline import Settings, run
+from .pipeline import Settings, bearing_to_north_angle, run
 
 
 def eprint(*args):
@@ -100,6 +100,24 @@ def resolve_settings(args):
     if end_hour <= start_hour:
         raise ValueError("--end 必须大于 --start。")
 
+    if args.north_bearing is not None and args.north_angle is not None:
+        raise ValueError(
+            "--north-bearing 和 --north-angle 只能给一个。"
+            "口语描述（北偏东/北偏西）用 --north-bearing。"
+        )
+
+    if args.north_bearing is not None:
+        north_angle = bearing_to_north_angle(args.north_bearing)
+        notes.append(
+            "北向 {0:g}°（{1}）".format(
+                args.north_bearing,
+                "北偏东" if args.north_bearing > 0 else
+                ("北偏西" if args.north_bearing < 0 else "正北"),
+            )
+        )
+    else:
+        north_angle = args.north_angle or 0.0
+
     settings = Settings(
         latitude=latitude,
         longitude=longitude,
@@ -114,7 +132,7 @@ def resolve_settings(args):
         required_sun_hours=args.required,
         impact_tolerance=args.impact_tolerance,
         max_iterations=args.max_iterations,
-        north_angle=args.north_angle,
+        north_angle=north_angle,
         voxel_size_xy=args.voxel_xy,
         voxel_size_z=args.voxel_z,
     )
@@ -256,6 +274,7 @@ def command_analyze(args):
             "voxel_size_xy_m": settings.voxel_size_xy,
             "voxel_size_z_m": settings.voxel_size_z,
             "north_angle_degrees": settings.north_angle,
+            "north_bearing_degrees": -settings.north_angle,
         },
         "voxelizer": {
             "voxels": len(grid.records),
@@ -373,8 +392,14 @@ def build_parser():
                          help="每个保护点要求的日照小时")
     analyze.add_argument("--impact-tolerance", type=float, default=0.1)
     analyze.add_argument("--max-iterations", type=int, default=200)
-    analyze.add_argument("--north-angle", type=float, default=0.0,
-                         help="北向相对 +Y 的旋转角，度")
+    analyze.add_argument(
+        "--north-bearing", type=float, default=None,
+        help="项目北向的方位角，度，自 +Y 起顺时针为正。"
+             "北偏东15度写 15，北偏西15度写 -15。口语描述用这个")
+    analyze.add_argument(
+        "--north-angle", type=float, default=None,
+        help="底层写法：北向自 +Y 起逆时针的旋转角，度。"
+             "与 --north-bearing 符号相反，二选一")
     analyze.add_argument("--voxel-xy", type=float, default=6.0, help="米")
     analyze.add_argument("--voxel-z", type=float, default=6.0, help="米")
     analyze.set_defaults(func=command_analyze)

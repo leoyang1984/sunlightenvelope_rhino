@@ -1,6 +1,6 @@
 # Solar Voxel Pipeline 开发路线图
 
-更新日期：2026-08-01
+更新日期：2026-08-04
 
 ## 固定组件编号
 
@@ -82,11 +82,12 @@ bundle 由 `tools/build_ghuser_bundles.py` 从脚本和 `tools/ghuser_spec.py`
 | metadata 与 RunScript 签名一致性 | 已通过 |
 | CI 构建两套 `.ghuser` | 已通过 |
 | 成品过期检测(源码摘要) | 已通过 |
-| 在 Rhino 中装载并计算 | **待验收** |
+| 在 Rhino 中装载并计算 | 已通过（2026-08-04） |
 
-CI 能证明构建成功、产物大小合理,但 `.ghuser` 的内容经 GH_IO 压缩,
-不借助 Grasshopper 无法核对。**首次分发前必须在 Rhino 里装一次**,确认
-端口齐全、能算出与脚本版一致的结果。
+CI 只能证明构建成功、产物大小合理;`.ghuser` 的内容经 GH_IO 压缩,
+不借助 Grasshopper 无法核对,所以装载这一步必须在 Rhino 里人工做。
+2026-08-04 已完成:六个 User Object 在 Grasshopper 中正常加载,端口齐全,
+能够计算。
 
 componentizer 每次运行都给端口分配新 GUID,`.ghuser` 因此不是字节可
 复现的,无法靠重新构建比对来判断仓库里的成品是否过期。改为对
@@ -97,8 +98,8 @@ componentizer 每次运行都给端口分配新 GUID,`.ghuser` 因此不是字�
 
 ### 打版本
 
-打 `v*` 标签会让 CI 把六个 `.ghuser` 自动挂到 Release 附件。建议**在
-Rhino 装载验收通过之后**再打第一个版本号。
+打 `v*` 标签会让 CI 把六个 `.ghuser` 自动挂到 Release 附件。装载验收已于
+2026-08-04 通过,这个前置条件已满足。
 
 ## Rhino 7 分支
 

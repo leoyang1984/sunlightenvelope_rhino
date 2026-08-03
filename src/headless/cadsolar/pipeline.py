@@ -189,11 +189,28 @@ def voxelize(design_prisms, size_xy, size_z, max_voxels=250000):
 # ------------------------------------------------------------ orchestration
 
 def north_east_vectors(north_angle_degrees=0.0):
-    """Project north/east unit vectors for the given north rotation."""
+    """
+    Project north/east unit vectors for the given north rotation.
+
+    The angle is counter-clockwise from +Y, so a positive value swings north
+    toward the west. Surveyors and architects say it the other way round
+    ("北偏东15度" swings north toward the east), which is what
+    bearing_to_north_angle converts.
+    """
     angle = math.radians(north_angle_degrees)
     north = (-math.sin(angle), math.cos(angle), 0.0)
     east = (north[1], -north[0], 0.0)
     return north, east
+
+
+def bearing_to_north_angle(bearing_degrees):
+    """
+    Convert a compass bearing for project north into the internal angle.
+
+    The bearing is measured clockwise from +Y, matching how the direction is
+    normally stated: 北偏东15度 is 15, 北偏西15度 is -15 (or 345).
+    """
+    return -float(bearing_degrees)
 
 
 def model_scale(points, prisms, context):

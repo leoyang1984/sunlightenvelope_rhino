@@ -95,8 +95,9 @@ R7 版对顺序可观测的字典改用 `collections.OrderedDict`,复刻 R8 的�
 
 - **R7 管线尚未完成实机验收。** 判据见
   [使用指南第6节](docs/RHINO7_PIPELINE_GUIDE.md)。
-- **`.ghuser` 尚未在 Grasshopper 中装载验证。** CI 能证明构建成功,但
-  `.ghuser` 内容经 GH_IO 压缩,不借助 Grasshopper 无法核对。
+- **`.ghuser` 已于 2026-08-04 完成 Grasshopper 装载验收。** 六个组件正常
+  加载,端口齐全,能够计算。CI 只能证明构建成功,`.ghuser` 内容经 GH_IO
+  压缩,这一步必须在 Rhino 里人工确认。
 - **已放置的组件实例不随更新变化。** `.ghuser` 在拖到画布时把代码复制
   进实例,更新只影响新拖出来的。这与手工粘贴脚本是同一个限制。
 - R7 管线忽略 SubD 并输出警告,需先在 Rhino 中转为 Brep 或闭合 Mesh。

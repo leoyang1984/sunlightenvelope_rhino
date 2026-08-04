@@ -243,11 +243,22 @@ cv.addEventListener('pointermove', e => {
   draw();
 });
 cv.addEventListener('pointerup', () => { drag = null; });
+// Plain wheel must scroll the report: swallowing it traps the reader
+// halfway down a long page with no obvious way out. Zoom takes a modifier,
+// and the buttons below make zoom reachable without one.
 cv.addEventListener('wheel', e => {
+  if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
   e.preventDefault();
   cam.zoom = Math.max(0.25, Math.min(8, cam.zoom * (e.deltaY < 0 ? 1.1 : 0.9)));
   draw();
 }, { passive: false });
+
+function zoomBy(factor) {
+  cam.zoom = Math.max(0.25, Math.min(8, cam.zoom * factor));
+  draw();
+}
+document.getElementById('zoomin').onclick = () => zoomBy(1.25);
+document.getElementById('zoomout').onclick = () => zoomBy(0.8);
 
 function setView(az, el) {
   cam.az = az; cam.el = el; cam.panX = 0; cam.panY = 0; cam.zoom = 1; draw();
@@ -365,6 +376,84 @@ def _rows(summary):
     return "\n".join(rows)
 
 
+def _timeline(scene, result):
+    """
+    One strip per protected point: what the day actually looks like.
+
+    A total in hours does not answer "morning or afternoon", which is the
+    first thing anyone asks. Three states per time step: direct sun after
+    carving, blocked by the design, and blocked by the existing context -
+    the last one matters because it is not the scheme's fault.
+    """
+    samples = result["samples"]
+    baseline = result["mapping"]["baseline_flags"]
+    final = result["outcome"]["final_direct_flags"]
+
+    if not samples or not baseline or not final:
+        return ""
+
+    span = (samples[-1]["end"] - samples[0]["start"]).total_seconds()
+
+    if span <= 0:
+        return ""
+
+    legend = (
+        '<div class="tl-legend">'
+        '<span><i class="sw" style="background:#2f7d4f"></i>直射日照</span>'
+        '<span><i class="sw" style="background:#c0392b"></i>被方案体量遮挡</span>'
+        '<span><i class="sw" style="background:#9aa4ae"></i>被周边现状遮挡</span>'
+        '</div>'
+    )
+
+    rows = []
+
+    for index, (base_flags, final_flags) in enumerate(zip(baseline, final)):
+        segments = []
+
+        for sample, is_base, is_final in zip(samples, base_flags, final_flags):
+            width = (sample["end"] - sample["start"]).total_seconds() / span * 100.0
+
+            if is_final:
+                colour, what = "#2f7d4f", "直射"
+            elif is_base:
+                colour, what = "#c0392b", "被方案遮挡"
+            else:
+                colour, what = "#9aa4ae", "被周边遮挡"
+
+            segments.append(
+                '<i style="width:{0:.4f}%;background:{1}" title="{2}–{3} {4}"></i>'
+                .format(
+                    width, colour,
+                    sample["start"].strftime("%H:%M"),
+                    sample["end"].strftime("%H:%M"),
+                    what,
+                )
+            )
+
+        rows.append(
+            '<tr><td class="tl-name">P{0}</td>'
+            '<td><div class="tl">{1}</div></td></tr>'.format(
+                index, "".join(segments)
+            )
+        )
+
+    ticks = (
+        '<tr><td></td><td class="tl-axis"><span>{0}</span><span>{1}</span></td></tr>'
+        .format(
+            samples[0]["start"].strftime("%H:%M"),
+            samples[-1]["end"].strftime("%H:%M"),
+        )
+    )
+
+    return (
+        '<div class="panel"><h2>全天日照时段</h2>'
+        '<div class="body" style="padding:14px 16px 4px">'
+        '<table class="tl-table">' + "".join(rows) + ticks + '</table>'
+        + legend +
+        '</div></div>'
+    )
+
+
 def render(scene, settings, result, title="日照约束体量切削"):
     """Return one self-contained HTML document."""
     outcome = result["outcome"]
@@ -450,6 +539,15 @@ def render(scene, settings, result, title="日照约束体量切削"):
         ),
         verify_css="ok" if summary["verified"] else "bad",
         rows=_rows(summary),
+        timeline_block=_timeline(scene, result),
+        warnings_block=(
+            '<div class="panel"><h2>计算警告</h2><div class="body">'
+            + "".join(
+                '<div class="note" style="border-color:var(--bad)">{0}</div>'
+                .format(w) for w in grid.warnings
+            )
+            + '</div></div>'
+        ) if grid.warnings else "",
         settings_rows=table(settings_rows),
         stats_rows=table(stats_rows),
         payload=payload,
@@ -513,6 +611,17 @@ td.num {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowra
 .bar {{ display:block; height:7px; border-radius:4px; background:var(--ok); min-width:2px; }}
 .two {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
 @media (max-width:820px) {{ .two {{ grid-template-columns:1fr; }} }}
+.tl-table {{ width:100%; border-collapse:collapse; }}
+.tl-table td {{ border:none; padding:5px 0; vertical-align:middle; }}
+.tl-name {{ width:44px; color:var(--muted); font-size:12.5px;
+  font-variant-numeric:tabular-nums; }}
+.tl {{ display:flex; height:16px; border-radius:4px; overflow:hidden;
+  border:1px solid var(--line); }}
+.tl i {{ display:block; height:100%; }}
+.tl-axis {{ display:flex; justify-content:space-between; color:var(--muted);
+  font-size:11.5px; padding-top:2px !important; }}
+.tl-legend {{ display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px;
+  color:var(--muted); padding:10px 0 4px; }}
 .note {{ font-size:12.5px; color:var(--muted); border-left:3px solid var(--line);
   padding:10px 14px; margin-top:6px; }}
 @media print {{
@@ -552,7 +661,7 @@ td.num {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowra
     <button data-toggle="context">周边建筑</button>
     <button data-toggle="points">保护点</button>
     <button data-toggle="grid">地面网格</button>
-    <button data-toggle="edges">棱线</button>\n    <button id="save">导出图片</button>
+    <button data-toggle="edges">棱线</button>\n    <button id="zoomout">−</button>\n    <button id="zoomin">+</button>\n    <button id="save">导出图片</button>
   </div>
   <canvas id="view"></canvas>
   <div class="legend">
@@ -561,7 +670,7 @@ td.num {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowra
     <span><i class="sw" style="background:rgb(140,146,154)"></i>周边建筑</span>
     <span><i class="sw" style="background:#2f7d4f"></i>达标保护点</span>
     <span><i class="sw" style="background:#c0392b"></i>不达标保护点</span>
-    <span style="margin-left:auto">拖拽旋转 · 滚轮缩放 · Shift+拖拽平移</span>
+    <span style="margin-left:auto">拖拽旋转 · Shift/⌘+滚轮缩放 · Shift+拖拽平移</span>
   </div>
 </div>
 
@@ -589,6 +698,10 @@ td.num {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowra
   <div class="panel"><h2>体素与切削</h2>
     <div class="body" style="padding:0"><table>{stats_rows}</table></div></div>
 </div>
+
+{timeline_block}
+
+{warnings_block}
 
 <div class="panel"><h2>适用边界</h2><div class="body">
   <div class="note" style="border-color:var(--warn)">

@@ -34,6 +34,28 @@ def fail(message, as_json):
     return 2
 
 
+def _design_overlaps(prisms):
+    """True when two design footprints share plan area."""
+    from .geom import point_in_polygon
+
+    for index, first in enumerate(prisms):
+        for second in prisms[index + 1:]:
+            a, b = first.bbox, second.bbox
+
+            if a[3] <= b[0] or b[3] <= a[0] or a[4] <= b[1] or b[4] <= a[1]:
+                continue
+
+            if any(point_in_polygon(second.polygon, x, y)
+                   for x, y in first.polygon):
+                return True
+
+            if any(point_in_polygon(first.polygon, x, y)
+                   for x, y in second.polygon):
+                return True
+
+    return False
+
+
 def load_scene(args):
     if args.dxf:
         return dxfio.read_scene(args.dxf, unit_scale=args.unit_scale)
@@ -170,6 +192,7 @@ def command_inspect(args):
             for x, y, z in scene.protected_points
         ],
         "has_site_boundary": scene.site is not None,
+        "design_footprints_overlap": _design_overlaps(scene.design),
     }
 
     if args.json:
@@ -184,6 +207,12 @@ def command_inspect(args):
 
         for index, (x, y, z) in enumerate(scene.protected_points):
             eprint("  [{0}] ({1:.2f}, {2:.2f}, {3:.2f})".format(index, x, y, z))
+
+        if payload["design_footprints_overlap"]:
+            eprint("")
+            eprint("注意            方案体量在平面上有重叠（例如裙房加塔楼）。")
+            eprint("                上面的合计体积是各块相加，实体体积比这个小；")
+            eprint("                以 analyze 报告里的体素化体积为准。")
 
     return 0
 
@@ -325,6 +354,12 @@ def command_analyze(args):
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
+        for warning in grid.warnings:
+            eprint("⚠ 警告    {0}".format(warning))
+
+        if grid.warnings:
+            eprint("")
+
         eprint("体素      {0} 个（{1} 柱，边界裁切 {2}）".format(
             len(grid.records), grid.columns, grid.clipped_count))
         eprint("切削      保留 {0} / 删除 {1}，保留率 {2:.2%}".format(

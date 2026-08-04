@@ -15,6 +15,7 @@ import time
 from . import kernel
 from .geom import (
     EPS,
+    point_in_polygon,
     Prism,
     PrismSet,
     clip_polygon_to_rect,
@@ -23,6 +24,65 @@ from .geom import (
 
 
 # ------------------------------------------------------------- 组件1
+
+def _covers_all(largest, pieces):
+    """
+    True when the largest clipped polygon contains all the others.
+
+    That is the podium-with-tower case, where taking the largest is not an
+    approximation but exactly the union. Vertex containment is enough here:
+    the pieces come from clipping against the same cell, so a polygon whose
+    vertices all lie inside another and whose area is no larger cannot poke
+    out of it.
+    """
+    largest_area = polygon_area(largest)
+
+    for area, polygon, _ in pieces:
+        if polygon is largest:
+            continue
+
+        if area > largest_area + EPS:
+            return False
+
+        for x, y in polygon:
+            if not point_in_polygon(largest, x, y):
+                # Boundary points read as outside; allow them.
+                on_edge = any(
+                    abs(x - px) < 1e-9 and abs(y - py) < 1e-9
+                    for px, py in largest
+                )
+
+                if not on_edge and not _near_boundary(largest, x, y):
+                    return False
+
+    return True
+
+
+def _near_boundary(polygon, x, y, tolerance=1e-9):
+    """True when the point sits on an edge of the polygon."""
+    count = len(polygon)
+
+    for index in range(count):
+        x1, y1 = polygon[index]
+        x2, y2 = polygon[(index + 1) % count]
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+
+        if length < tolerance:
+            continue
+
+        cross = abs((x - x1) * dy - (y - y1) * dx) / length
+
+        if cross > 1e-7:
+            continue
+
+        dot = ((x - x1) * dx + (y - y1) * dy) / (length * length)
+
+        if -1e-9 <= dot <= 1 + 1e-9:
+            return True
+
+    return False
+
 
 class VoxelGrid(object):
     """Result of voxelizing the design volume."""
@@ -89,6 +149,7 @@ def voxelize(design_prisms, size_xy, size_z, max_voxels=250000):
 
     column_id = 0
     voxel_id = 0
+    inexact_cells = 0
 
     for j in range(ny):
         for i in range(nx):
@@ -121,23 +182,35 @@ def voxelize(design_prisms, size_xy, size_z, max_voxels=250000):
             if not pieces:
                 continue
 
-            if len(pieces) > 1:
-                grid.warnings.append(
-                    "列 ({0},{1}) 有 {2} 个方案体量重叠，本 spike 只取"
-                    "面积最大的一个，未做实体并集。".format(i, j, len(pieces))
-                )
-
-            pieces.sort(key=lambda item: item[0], reverse=True)
-            area, footprint, prism = pieces[0]
-
             column_has_voxel = False
 
             for k in range(nz):
                 layer_z0 = z_min + k * size_z
                 layer_z1 = min(layer_z0 + size_z, z_max)
-                low = max(layer_z0, prism.z_low)
-                high = min(layer_z1, prism.z_high)
                 grid.candidate_cells += 1
+
+                # Only the volumes that actually reach this layer. Choosing
+                # once per column instead would let a low podium mask the
+                # tower standing on it, silently analysing a shorter
+                # building than the one that was drawn.
+                active = [
+                    piece for piece in pieces
+                    if min(layer_z1, piece[2].z_high)
+                    - max(layer_z0, piece[2].z_low) > EPS
+                ]
+
+                if not active:
+                    continue
+
+                active.sort(key=lambda piece: piece[0], reverse=True)
+                area, footprint, _ = active[0]
+
+                if len(active) > 1 and not _covers_all(footprint, active):
+                    inexact_cells += 1
+                    area = max(piece[0] for piece in active)
+
+                low = max(layer_z0, min(piece[2].z_low for piece in active))
+                high = min(layer_z1, max(piece[2].z_high for piece in active))
 
                 if high - low <= EPS:
                     continue
@@ -177,6 +250,14 @@ def voxelize(design_prisms, size_xy, size_z, max_voxels=250000):
 
             if column_has_voxel:
                 column_id += 1
+
+    if inexact_cells:
+        grid.warnings.append(
+            "有 {0} 个体素单元被多个方案体量部分重叠覆盖，且没有一个体量完全"
+            "包含其余的。这些单元按面积最大的那个体量计算，**体积会被低估**。"
+            "把重叠的体量合并成一个闭合轮廓再导出，可以消除这项近似。"
+            .format(inexact_cells)
+        )
 
     grid.columns = column_id
 

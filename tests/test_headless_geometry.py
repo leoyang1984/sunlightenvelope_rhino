@@ -239,3 +239,59 @@ class DeterminismTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class OverlappingDesignVolumeTests(unittest.TestCase):
+    """
+    A podium with a tower on it is drawn as two overlapping blocks. Picking
+    one volume per column let the low podium mask the tower, so the pipeline
+    analysed an 18 m building where 54 m had been drawn - and reported
+    "nothing to carve" with full confidence.
+    """
+
+    def setUp(self):
+        self.podium = Prism([(8, 4), (62, 4), (62, 34), (8, 34)], 0.0, 18.0)
+        self.tower = Prism([(20, 10), (48, 10), (48, 30), (20, 30)], 0.0, 54.0)
+
+    def test_tower_survives_the_podium(self):
+        grid = pipeline.voxelize([self.podium, self.tower], 6.0, 6.0)
+        top = max(record["geometry"].z_high for record in grid.records)
+        self.assertAlmostEqual(top, 54.0, places=6, msg="塔楼高度不能被裙房吃掉")
+
+    def test_nested_volumes_give_the_exact_solid_volume(self):
+        """Podium contains tower, so the union is exact, not an estimate."""
+        grid = pipeline.voxelize([self.podium, self.tower], 6.0, 6.0)
+        overlap = 28.0 * 20.0 * 18.0
+        expected = self.podium.volume + self.tower.volume - overlap
+        self.assertAlmostEqual(grid.total_volume, expected, places=6)
+        self.assertEqual(grid.warnings, [], "完全包含的情况不该报近似")
+
+    def test_order_of_the_two_blocks_does_not_matter(self):
+        a = pipeline.voxelize([self.podium, self.tower], 6.0, 6.0)
+        b = pipeline.voxelize([self.tower, self.podium], 6.0, 6.0)
+        self.assertAlmostEqual(a.total_volume, b.total_volume, places=6)
+        self.assertEqual(len(a.records), len(b.records))
+
+    def test_axis_aligned_overlap_is_still_exact(self):
+        """
+        Two rectangles clip to the same polygon inside a shared cell, so the
+        largest is the union and there is nothing to approximate.
+        """
+        left = Prism([(0, 0), (20, 0), (20, 20), (0, 20)], 0.0, 20.0)
+        right = Prism([(10, 0), (30, 0), (30, 20), (10, 20)], 0.0, 40.0)
+        grid = pipeline.voxelize([left, right], 5.0, 5.0)
+        self.assertEqual(grid.warnings, [])
+        expected = 20 * 20 * 20 + 20 * 20 * 40 - 10 * 20 * 20
+        self.assertAlmostEqual(grid.total_volume, expected, places=6)
+
+    def test_partial_overlap_is_reported_as_an_approximation(self):
+        """
+        Footprints split along a diagonal clip to complementary shapes, so
+        neither contains the other and the union cannot be recovered by
+        taking one of them. That has to be said out loud, not absorbed.
+        """
+        lower = Prism([(0, 0), (20, 0), (20, 20)], 0.0, 20.0)
+        upper = Prism([(0, 0), (0, 20), (20, 20)], 0.0, 40.0)
+        grid = pipeline.voxelize([lower, upper], 5.0, 5.0)
+        self.assertTrue(grid.warnings, "部分重叠必须告警")
+        self.assertIn("低估", grid.warnings[0])
